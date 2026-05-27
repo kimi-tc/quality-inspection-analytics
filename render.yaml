@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: weekly-inspection-analytics
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:server
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+    disk:
+      name: weekly-inspection-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1

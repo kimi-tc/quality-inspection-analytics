@@ -1,0 +1,5 @@
+{
+  "name": "Quality Inspection Analytics",
+  "description": "A comprehensive dashboard for visualizing after-sales online review data, tracking batch performance, and analyzing property tag failure rates.",
+  "requestFramePermissions": []
+}
