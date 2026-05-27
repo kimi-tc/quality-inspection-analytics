@@ -8,21 +8,21 @@
     <key>ProgramArguments</key>
     <array>
       <string>/bin/zsh</string>
-      <string>/Users/REPLACE_ME/quality-inspection-analytics/scripts/start-local-prod.sh</string>
+      <string>/Users/tangchao144522/quality-inspection-analytics/scripts/start-local-prod.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
       <key>PROJECT_DIR</key>
-      <string>/Users/REPLACE_ME/quality-inspection-analytics</string>
+      <string>/Users/tangchao144522/quality-inspection-analytics</string>
       <key>PORT</key>
       <string>3000</string>
       <key>DATA_DIR</key>
-      <string>/Users/REPLACE_ME/quality-inspection-analytics/data</string>
+      <string>/Users/tangchao144522/quality-inspection-analytics/data</string>
     </dict>
 
     <key>WorkingDirectory</key>
-    <string>/Users/REPLACE_ME/quality-inspection-analytics</string>
+    <string>/Users/tangchao144522/quality-inspection-analytics</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -31,9 +31,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/REPLACE_ME/Library/Logs/weekly-inspection-analytics.log</string>
+    <string>/Users/tangchao144522/Library/Logs/weekly-inspection-analytics.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/REPLACE_ME/Library/Logs/weekly-inspection-analytics-error.log</string>
+    <string>/Users/tangchao144522/Library/Logs/weekly-inspection-analytics-error.log</string>
   </dict>
 </plist>
