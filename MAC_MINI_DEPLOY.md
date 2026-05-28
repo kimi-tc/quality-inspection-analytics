@@ -112,7 +112,25 @@ tail -f ~/Library/Logs/weekly-inspection-analytics.log
 tail -f ~/Library/Logs/weekly-inspection-analytics-error.log
 ```
 
-## 8. Practical recommendation
+## 8. Daily maintenance
+
+Check service status:
+
+```bash
+cd ~/quality-inspection-analytics
+chmod +x scripts/check-local-prod.sh
+./scripts/check-local-prod.sh
+```
+
+Back up shared data:
+
+```bash
+cd ~/quality-inspection-analytics
+chmod +x scripts/backup-data.sh
+./scripts/backup-data.sh
+```
+
+## 9. Practical recommendation
 
 For your current situation, this is the most cost-effective path.
 
