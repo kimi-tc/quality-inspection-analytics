@@ -13,6 +13,10 @@ import {
   Tooltip,
   BarChart,
   Bar,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
 } from 'recharts';
 import {
   Upload,
@@ -254,6 +258,19 @@ const aggregateAttributes = (rows: ImportedRow[]) =>
   )
     .sort((a, b) => b.declarations - a.declarations)
     .slice(0, 10);
+
+const aggregateCategories = (rows: ImportedRow[]) =>
+  Object.values(
+    rows.reduce<Record<string, { name: string; value: number }>>((acc, row) => {
+      const key = row.category || '未分类';
+      if (!acc[key]) {
+        acc[key] = { name: key, value: 0 };
+      }
+
+      acc[key].value += row.declarations;
+      return acc;
+    }, {}),
+  ).sort((a, b) => b.value - a.value);
 
 const aggregateCompareTrend = (leftRows: ImportedRow[], rightRows: ImportedRow[], leftLabel: string, rightLabel: string) => {
   const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
@@ -565,6 +582,7 @@ function App() {
   const metrics = useMemo(() => aggregateMetrics(filteredRows), [filteredRows]);
   const trendData = useMemo(() => aggregateTrend(filteredRows), [filteredRows]);
   const topAttributes = useMemo(() => aggregateAttributes(filteredRows), [filteredRows]);
+  const categoryData = useMemo(() => aggregateCategories(filteredRows), [filteredRows]);
   const compareLeftRows = useMemo(
     () =>
       filterRowsByCriteria(dataset.rows, {
@@ -1105,25 +1123,32 @@ function App() {
                 </div>
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Ranking</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">高频属性项</h2>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Category Mix</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">属性项分类分布</h2>
                   </div>
                   <div className="h-[320px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={topAttributes} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
-                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
-                        <XAxis type="number" hide />
-                        <YAxis
-                          type="category"
-                          dataKey="attribute"
-                          width={88}
-                          tickLine={false}
-                          axisLine={false}
-                          fontSize={12}
-                        />
-                        <Tooltip />
-                        <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
-                      </BarChart>
+                      <PieChart>
+                        <Pie
+                          data={categoryData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="45%"
+                          cy="50%"
+                          innerRadius={58}
+                          outerRadius={102}
+                          paddingAngle={2}
+                        >
+                          {categoryData.map((item, index) => (
+                            <Cell
+                              key={item.name}
+                              fill={['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'][index % 6]}
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value: number) => formatInteger(value)} />
+                        <Legend verticalAlign="middle" align="right" layout="vertical" iconType="circle" />
+                      </PieChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
