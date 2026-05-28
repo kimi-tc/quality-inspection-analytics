@@ -32,6 +32,11 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  House,
+  GitCompareArrows,
+  ArrowUpRight,
+  ArrowDownRight,
+  Minus,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ImportedRow, MetricsCardData, ParsedWorkbook, SharedDatasetResponse } from './types';
@@ -152,12 +157,31 @@ const formatInteger = (value: number) => value.toLocaleString('zh-CN');
 const formatDateDisplay = (value: string) => (value === ALL_OPTION ? '' : value);
 const parseDateValue = (value: string) => (value && value !== ALL_OPTION ? parseISO(value) : undefined);
 
+type FilterCriteria = {
+  startDate: string;
+  endDate: string;
+  session: string;
+  batch: string;
+  attribute: string;
+};
+
 const createOptions = (rows: ImportedRow[], key: keyof ImportedRow) =>
   [ALL_OPTION].concat(
     [...new Set(rows.map((row) => String(row[key] ?? '')).filter(Boolean))].sort((a, b) =>
       a.localeCompare(b, 'zh-CN'),
     ),
   );
+
+const filterRowsByCriteria = (rows: ImportedRow[], criteria: FilterCriteria) =>
+  rows.filter((row) => {
+    const startMatch = criteria.startDate === ALL_OPTION || row.date >= criteria.startDate;
+    const endMatch = criteria.endDate === ALL_OPTION || row.date <= criteria.endDate;
+    const sessionMatch = criteria.session === ALL_OPTION || row.session === criteria.session;
+    const batchMatch = criteria.batch === ALL_OPTION || row.batch === criteria.batch;
+    const attributeMatch = criteria.attribute === ALL_OPTION || row.attribute === criteria.attribute;
+
+    return startMatch && endMatch && sessionMatch && batchMatch && attributeMatch;
+  });
 
 const aggregateMetrics = (rows: ImportedRow[]) => {
   const totals = rows.reduce(
@@ -231,6 +255,204 @@ const aggregateAttributes = (rows: ImportedRow[]) =>
     .sort((a, b) => b.declarations - a.declarations)
     .slice(0, 10);
 
+const aggregateCompareTrend = (leftRows: ImportedRow[], rightRows: ImportedRow[], leftLabel: string, rightLabel: string) => {
+  const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+
+  const buildSeries = (rows: ImportedRow[]) => {
+    const grouped = rows.reduce<
+      Record<string, { declarations: number; ambiguous: number; rejects: number; proofRejects: number }>
+    >((acc, row) => {
+      if (!acc[row.date]) {
+        acc[row.date] = { declarations: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
+      }
+      acc[row.date].declarations += row.declarations;
+      acc[row.date].ambiguous += row.ambiguousPasses;
+      acc[row.date].rejects += row.rejects;
+      acc[row.date].proofRejects += row.proofRejects;
+      return acc;
+    }, {});
+
+    return Object.entries(grouped)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, item], index) => ({
+        dayIndex: index + 1,
+        date,
+        declarations: item.declarations,
+        proofAccuracy: safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations),
+        exactPassRate: safeRate(item.declarations - item.ambiguous - item.rejects, item.declarations),
+      }));
+  };
+
+  const leftSeries = buildSeries(leftRows);
+  const rightSeries = buildSeries(rightRows);
+  const maxLength = Math.max(leftSeries.length, rightSeries.length);
+  const rows = Array.from({ length: maxLength }, (_, index) => {
+    const left = leftSeries[index];
+    const right = rightSeries[index];
+
+    return {
+      dayLabel: `第${index + 1}天`,
+      leftProofAccuracy: left?.proofAccuracy ?? null,
+      rightProofAccuracy: right?.proofAccuracy ?? null,
+      leftExactPassRate: left?.exactPassRate ?? null,
+      rightExactPassRate: right?.exactPassRate ?? null,
+      leftDate: left?.date ?? '-',
+      rightDate: right?.date ?? '-',
+    };
+  });
+
+  return {
+    leftLabel,
+    rightLabel,
+    rows,
+  };
+};
+
+const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch') => {
+  const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+
+  return Object.values(
+    rows.reduce<
+      Record<string, { name: string; declarations: number; ambiguous: number; rejects: number; proofRejects: number }>
+    >((acc, row) => {
+      const name = row[key];
+      if (!acc[name]) {
+        acc[name] = { name, declarations: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
+      }
+
+      acc[name].declarations += row.declarations;
+      acc[name].ambiguous += row.ambiguousPasses;
+      acc[name].rejects += row.rejects;
+      acc[name].proofRejects += row.proofRejects;
+      return acc;
+    }, {}),
+  )
+    .map((item) => ({
+      name: item.name,
+      declarations: item.declarations,
+      proofAccuracy: safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations),
+      exactPassRate: safeRate(item.declarations - item.ambiguous - item.rejects, item.declarations),
+    }))
+    .sort((a, b) => b.declarations - a.declarations)
+    .slice(0, 10);
+};
+
+const aggregateSessionComparison = (leftRows: ImportedRow[], rightRows: ImportedRow[]) => {
+  const sessions = new Map<
+    string,
+    {
+      session: string;
+      leftDeclarations: number;
+      rightDeclarations: number;
+      leftProofAccuracy: number;
+      rightProofAccuracy: number;
+    }
+  >();
+
+  const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+
+  const consume = (rows: ImportedRow[], side: 'left' | 'right') => {
+    const grouped = rows.reduce<
+      Record<string, { declarations: number; ambiguous: number; proofRejects: number }>
+    >((acc, row) => {
+      if (!acc[row.session]) {
+        acc[row.session] = { declarations: 0, ambiguous: 0, proofRejects: 0 };
+      }
+      acc[row.session].declarations += row.declarations;
+      acc[row.session].ambiguous += row.ambiguousPasses;
+      acc[row.session].proofRejects += row.proofRejects;
+      return acc;
+    }, {});
+
+    Object.entries(grouped).forEach(([session, item]) => {
+      if (!sessions.has(session)) {
+        sessions.set(session, {
+          session,
+          leftDeclarations: 0,
+          rightDeclarations: 0,
+          leftProofAccuracy: 0,
+          rightProofAccuracy: 0,
+        });
+      }
+
+      const current = sessions.get(session)!;
+      if (side === 'left') {
+        current.leftDeclarations = item.declarations;
+        current.leftProofAccuracy = safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations);
+      } else {
+        current.rightDeclarations = item.declarations;
+        current.rightProofAccuracy = safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations);
+      }
+    });
+  };
+
+  consume(leftRows, 'left');
+  consume(rightRows, 'right');
+
+  return [...sessions.values()].sort(
+    (a, b) =>
+      Math.abs(b.leftProofAccuracy - b.rightProofAccuracy) - Math.abs(a.leftProofAccuracy - a.rightProofAccuracy),
+  );
+};
+
+const aggregateBatchComparison = (leftRows: ImportedRow[], rightRows: ImportedRow[]) => {
+  const batches = new Map<
+    string,
+    {
+      batch: string;
+      leftDeclarations: number;
+      rightDeclarations: number;
+      leftProofAccuracy: number;
+      rightProofAccuracy: number;
+    }
+  >();
+
+  const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+
+  const consume = (rows: ImportedRow[], side: 'left' | 'right') => {
+    const grouped = rows.reduce<
+      Record<string, { declarations: number; ambiguous: number; proofRejects: number }>
+    >((acc, row) => {
+      if (!acc[row.batch]) {
+        acc[row.batch] = { declarations: 0, ambiguous: 0, proofRejects: 0 };
+      }
+      acc[row.batch].declarations += row.declarations;
+      acc[row.batch].ambiguous += row.ambiguousPasses;
+      acc[row.batch].proofRejects += row.proofRejects;
+      return acc;
+    }, {});
+
+    Object.entries(grouped).forEach(([batch, item]) => {
+      if (!batches.has(batch)) {
+        batches.set(batch, {
+          batch,
+          leftDeclarations: 0,
+          rightDeclarations: 0,
+          leftProofAccuracy: 0,
+          rightProofAccuracy: 0,
+        });
+      }
+
+      const current = batches.get(batch)!;
+      if (side === 'left') {
+        current.leftDeclarations = item.declarations;
+        current.leftProofAccuracy = safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations);
+      } else {
+        current.rightDeclarations = item.declarations;
+        current.rightProofAccuracy = safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations);
+      }
+    });
+  };
+
+  consume(leftRows, 'left');
+  consume(rightRows, 'right');
+
+  return [...batches.values()].sort(
+    (a, b) =>
+      Math.abs(b.leftProofAccuracy - b.rightProofAccuracy) - Math.abs(a.leftProofAccuracy - a.rightProofAccuracy),
+  );
+};
+
 const downloadTemplate = () => {
   const sample = [
     {
@@ -284,11 +506,19 @@ const clearSharedDataset = async (): Promise<SharedDatasetResponse> => {
 
 function App() {
   const [dataset, setDataset] = useState<ParsedWorkbook>(emptyWorkbook);
+  const [activeView, setActiveView] = useState<'overview' | 'compare' | 'attribute'>('overview');
   const [startDateFilter, setStartDateFilter] = useState(ALL_OPTION);
   const [endDateFilter, setEndDateFilter] = useState(ALL_OPTION);
   const [sessionFilter, setSessionFilter] = useState(ALL_OPTION);
   const [batchFilter, setBatchFilter] = useState(ALL_OPTION);
   const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
+  const [compareLeftStart, setCompareLeftStart] = useState(ALL_OPTION);
+  const [compareLeftEnd, setCompareLeftEnd] = useState(ALL_OPTION);
+  const [compareRightStart, setCompareRightStart] = useState(ALL_OPTION);
+  const [compareRightEnd, setCompareRightEnd] = useState(ALL_OPTION);
+  const [compareSessionSelection, setCompareSessionSelection] = useState(ALL_OPTION);
+  const [compareBatchFirstSelection, setCompareBatchFirstSelection] = useState(ALL_OPTION);
+  const [compareBatchSecondSelection, setCompareBatchSecondSelection] = useState(ALL_OPTION);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -322,14 +552,12 @@ function App() {
 
   const filteredRows = useMemo(
     () =>
-      dataset.rows.filter((row) => {
-        const startMatch = startDateFilter === ALL_OPTION || row.date >= startDateFilter;
-        const endMatch = endDateFilter === ALL_OPTION || row.date <= endDateFilter;
-        const sessionMatch = sessionFilter === ALL_OPTION || row.session === sessionFilter;
-        const batchMatch = batchFilter === ALL_OPTION || row.batch === batchFilter;
-        const attributeMatch = attributeFilter === ALL_OPTION || row.attribute === attributeFilter;
-
-        return startMatch && endMatch && sessionMatch && batchMatch && attributeMatch;
+      filterRowsByCriteria(dataset.rows, {
+        startDate: startDateFilter,
+        endDate: endDateFilter,
+        session: sessionFilter,
+        batch: batchFilter,
+        attribute: attributeFilter,
       }),
     [attributeFilter, batchFilter, dataset.rows, endDateFilter, sessionFilter, startDateFilter],
   );
@@ -337,6 +565,104 @@ function App() {
   const metrics = useMemo(() => aggregateMetrics(filteredRows), [filteredRows]);
   const trendData = useMemo(() => aggregateTrend(filteredRows), [filteredRows]);
   const topAttributes = useMemo(() => aggregateAttributes(filteredRows), [filteredRows]);
+  const compareLeftRows = useMemo(
+    () =>
+      filterRowsByCriteria(dataset.rows, {
+        startDate: compareLeftStart,
+        endDate: compareLeftEnd,
+        session: sessionFilter,
+        batch: batchFilter,
+        attribute: attributeFilter,
+      }),
+    [attributeFilter, batchFilter, compareLeftEnd, compareLeftStart, dataset.rows, sessionFilter],
+  );
+  const compareRightRows = useMemo(
+    () =>
+      filterRowsByCriteria(dataset.rows, {
+        startDate: compareRightStart,
+        endDate: compareRightEnd,
+        session: sessionFilter,
+        batch: batchFilter,
+        attribute: attributeFilter,
+      }),
+    [attributeFilter, batchFilter, compareRightEnd, compareRightStart, dataset.rows, sessionFilter],
+  );
+  const compareLeftMetrics = useMemo(() => aggregateMetrics(compareLeftRows), [compareLeftRows]);
+  const compareRightMetrics = useMemo(() => aggregateMetrics(compareRightRows), [compareRightRows]);
+  const compareTrend = useMemo(
+    () =>
+      aggregateCompareTrend(
+        compareLeftRows,
+        compareRightRows,
+        `${formatDateDisplay(compareLeftStart) || '区间A'} → ${formatDateDisplay(compareLeftEnd) || '未选'}`,
+        `${formatDateDisplay(compareRightStart) || '区间B'} → ${formatDateDisplay(compareRightEnd) || '未选'}`,
+      ),
+    [compareLeftEnd, compareLeftRows, compareLeftStart, compareRightEnd, compareRightRows, compareRightStart],
+  );
+  const compareSessionRows = useMemo(
+    () => aggregateSessionComparison(compareLeftRows, compareRightRows),
+    [compareLeftRows, compareRightRows],
+  );
+  const compareBatchRows = useMemo(
+    () => aggregateBatchComparison(compareLeftRows, compareRightRows),
+    [compareLeftRows, compareRightRows],
+  );
+  const compareSessionOptions = useMemo(
+    () => [ALL_OPTION, ...compareSessionRows.map((item) => item.session)],
+    [compareSessionRows],
+  );
+  const compareBatchOptions = useMemo(
+    () => [ALL_OPTION, ...compareBatchRows.map((item) => item.batch)],
+    [compareBatchRows],
+  );
+  const compareSelectedSession = useMemo(
+    () =>
+      compareSessionRows.find((item) => item.session === compareSessionSelection) ??
+      compareSessionRows[0] ??
+      null,
+    [compareSessionRows, compareSessionSelection],
+  );
+  const compareSelectedBatchFirst = useMemo(
+    () =>
+      compareBatchRows.find((item) => item.batch === compareBatchFirstSelection) ??
+      compareBatchRows[0] ??
+      null,
+    [compareBatchFirstSelection, compareBatchRows],
+  );
+  const compareSelectedBatchSecond = useMemo(
+    () =>
+      compareBatchRows.find((item) => item.batch === compareBatchSecondSelection) ??
+      compareBatchRows.find((item) => item.batch !== (compareBatchFirstSelection === ALL_OPTION ? compareBatchRows[0]?.batch : compareBatchFirstSelection)) ??
+      compareBatchRows[1] ??
+      null,
+    [compareBatchFirstSelection, compareBatchRows, compareBatchSecondSelection],
+  );
+  const compareBatchChartData = useMemo(() => {
+    if (!compareSelectedBatchFirst || !compareSelectedBatchSecond) {
+      return [];
+    }
+
+    return [
+      {
+        metric: '区间A',
+        [compareSelectedBatchFirst.batch]: compareSelectedBatchFirst.leftProofAccuracy,
+        [compareSelectedBatchSecond.batch]: compareSelectedBatchSecond.leftProofAccuracy,
+      },
+      {
+        metric: '区间B',
+        [compareSelectedBatchFirst.batch]: compareSelectedBatchFirst.rightProofAccuracy,
+        [compareSelectedBatchSecond.batch]: compareSelectedBatchSecond.rightProofAccuracy,
+      },
+    ];
+  }, [compareSelectedBatchFirst, compareSelectedBatchSecond]);
+  const attributeSessionRows = useMemo(
+    () => aggregateDimensionMetrics(filteredRows, 'session'),
+    [filteredRows],
+  );
+  const attributeBatchRows = useMemo(
+    () => aggregateDimensionMetrics(filteredRows, 'batch'),
+    [filteredRows],
+  );
 
   const cards: MetricsCardData[] = [
     {
@@ -391,6 +717,10 @@ function App() {
       setDataset(nextDataset);
       setStartDateFilter(ALL_OPTION);
       setEndDateFilter(ALL_OPTION);
+      setCompareLeftStart(ALL_OPTION);
+      setCompareLeftEnd(ALL_OPTION);
+      setCompareRightStart(ALL_OPTION);
+      setCompareRightEnd(ALL_OPTION);
       setSessionFilter(ALL_OPTION);
       setBatchFilter(ALL_OPTION);
       setAttributeFilter(ALL_OPTION);
@@ -409,6 +739,10 @@ function App() {
       setDataset(nextDataset);
       setStartDateFilter(ALL_OPTION);
       setEndDateFilter(ALL_OPTION);
+      setCompareLeftStart(ALL_OPTION);
+      setCompareLeftEnd(ALL_OPTION);
+      setCompareRightStart(ALL_OPTION);
+      setCompareRightEnd(ALL_OPTION);
       setSessionFilter(ALL_OPTION);
       setBatchFilter(ALL_OPTION);
       setAttributeFilter(ALL_OPTION);
@@ -417,14 +751,134 @@ function App() {
     }
   };
 
+  const compareCards = [
+    {
+      title: '申报次数',
+      leftValue: compareLeftMetrics.declarations,
+      rightValue: compareRightMetrics.declarations,
+      formatter: formatInteger,
+    },
+    {
+      title: '举证准确率',
+      leftValue: compareLeftMetrics.proofAccuracy,
+      rightValue: compareRightMetrics.proofAccuracy,
+      formatter: formatPercent,
+    },
+    {
+      title: '精准通过率',
+      leftValue: compareLeftMetrics.exactPassRate,
+      rightValue: compareRightMetrics.exactPassRate,
+      formatter: formatPercent,
+    },
+    {
+      title: '模棱两可率',
+      leftValue: compareLeftMetrics.ambiguousRate,
+      rightValue: compareRightMetrics.ambiguousRate,
+      formatter: formatPercent,
+    },
+    {
+      title: '拒绝率',
+      leftValue: compareLeftMetrics.rejectRate,
+      rightValue: compareRightMetrics.rejectRate,
+      formatter: formatPercent,
+    },
+  ];
+
+  const compareModeReady =
+    compareLeftStart !== ALL_OPTION &&
+    compareLeftEnd !== ALL_OPTION &&
+    compareRightStart !== ALL_OPTION &&
+    compareRightEnd !== ALL_OPTION;
+
+  useEffect(() => {
+    if (!compareSessionRows.length) {
+      setCompareSessionSelection(ALL_OPTION);
+      return;
+    }
+
+    if (
+      compareSessionSelection === ALL_OPTION ||
+      !compareSessionRows.some((item) => item.session === compareSessionSelection)
+    ) {
+      setCompareSessionSelection(compareSessionRows[0].session);
+    }
+  }, [compareSessionRows, compareSessionSelection]);
+
+  useEffect(() => {
+    if (!compareBatchRows.length) {
+      setCompareBatchFirstSelection(ALL_OPTION);
+      setCompareBatchSecondSelection(ALL_OPTION);
+      return;
+    }
+
+    const batchNames = compareBatchRows.map((item) => item.batch);
+
+    if (
+      compareBatchFirstSelection === ALL_OPTION ||
+      !batchNames.includes(compareBatchFirstSelection)
+    ) {
+      setCompareBatchFirstSelection(batchNames[0]);
+    }
+
+    if (
+      compareBatchSecondSelection === ALL_OPTION ||
+      !batchNames.includes(compareBatchSecondSelection) ||
+      compareBatchSecondSelection === compareBatchFirstSelection
+    ) {
+      setCompareBatchSecondSelection(batchNames.find((item) => item !== batchNames[0]) ?? batchNames[0]);
+    }
+  }, [compareBatchFirstSelection, compareBatchRows, compareBatchSecondSelection]);
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f6efe4_0%,_#f3f8f6_40%,_#eef2ff_100%)] text-slate-900">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <motion.section
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur"
-        >
+      <div className="mx-auto flex max-w-[1600px] gap-6 px-4 py-6 sm:px-6 lg:px-8">
+        <aside className="hidden w-[240px] shrink-0 lg:block">
+          <div className="sticky top-6 rounded-[34px] bg-[linear-gradient(180deg,_#0d1424_0%,_#121a2d_100%)] p-5 text-white shadow-[0_24px_64px_rgba(15,23,42,0.24)]">
+            <div className="mb-8 flex items-center gap-3">
+              <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-[linear-gradient(135deg,_#2ad8ff_0%,_#1493ff_100%)] text-slate-950">
+                <Layers3 size={24} />
+              </div>
+              <div>
+                <p className="font-display text-xl font-semibold">PQA</p>
+                <p className="text-xs tracking-[0.22em] text-slate-400">Dashboard</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <SidebarNavItem
+                icon={<House size={20} />}
+                label="首页"
+                active={activeView === 'overview'}
+                onClick={() => setActiveView('overview')}
+              />
+              <SidebarNavItem
+                icon={<GitCompareArrows size={20} />}
+                label="对比分析"
+                active={activeView === 'compare'}
+                onClick={() => setActiveView('compare')}
+              />
+              <SidebarNavItem
+                icon={<Tags size={20} />}
+                label="属性项分析"
+                active={activeView === 'attribute'}
+                onClick={() => setActiveView('attribute')}
+              />
+            </div>
+          </div>
+        </aside>
+
+        <div className="min-w-0 flex-1">
+          <div className="mb-4 flex gap-3 lg:hidden">
+            <MobileNavChip label="首页" active={activeView === 'overview'} onClick={() => setActiveView('overview')} />
+            <MobileNavChip label="对比分析" active={activeView === 'compare'} onClick={() => setActiveView('compare')} />
+            <MobileNavChip label="属性项分析" active={activeView === 'attribute'} onClick={() => setActiveView('attribute')} />
+          </div>
+
+          <motion.section
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur"
+          >
           <div className="p-5 lg:p-6">
             <div className="rounded-[28px] border border-slate-200 bg-white/90 p-4 shadow-[0_12px_35px_rgba(15,23,42,0.04)]">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -492,17 +946,47 @@ function App() {
             <div className="mt-4 rounded-[28px] bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] p-4 text-white">
               <div className="flex flex-col gap-4">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto] xl:items-end">
-                  <DateRangeFilter
-                    startValue={startDateFilter}
-                    endValue={endDateFilter}
-                    options={options.dates}
-                    onStartChange={setStartDateFilter}
-                    onEndChange={setEndDateFilter}
-                    onClear={() => {
-                      setStartDateFilter(ALL_OPTION);
-                      setEndDateFilter(ALL_OPTION);
-                    }}
-                  />
+                  {activeView !== 'compare' ? (
+                    <DateRangeFilter
+                      label="日期区间"
+                      startValue={startDateFilter}
+                      endValue={endDateFilter}
+                      options={options.dates}
+                      onStartChange={setStartDateFilter}
+                      onEndChange={setEndDateFilter}
+                      onClear={() => {
+                        setStartDateFilter(ALL_OPTION);
+                        setEndDateFilter(ALL_OPTION);
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <DateRangeFilter
+                        label="区间A"
+                        startValue={compareLeftStart}
+                        endValue={compareLeftEnd}
+                        options={options.dates}
+                        onStartChange={setCompareLeftStart}
+                        onEndChange={setCompareLeftEnd}
+                        onClear={() => {
+                          setCompareLeftStart(ALL_OPTION);
+                          setCompareLeftEnd(ALL_OPTION);
+                        }}
+                      />
+                      <DateRangeFilter
+                        label="区间B"
+                        startValue={compareRightStart}
+                        endValue={compareRightEnd}
+                        options={options.dates}
+                        onStartChange={setCompareRightStart}
+                        onEndChange={setCompareRightEnd}
+                        onClear={() => {
+                          setCompareRightStart(ALL_OPTION);
+                          setCompareRightEnd(ALL_OPTION);
+                        }}
+                      />
+                    </>
+                  )}
                   <FilterSelect
                     label="场次"
                     icon={<Layers3 size={16} />}
@@ -540,111 +1024,499 @@ function App() {
               </div>
             </div>
           </div>
-        </motion.section>
+          </motion.section>
 
-        <section className="mt-8">
-          <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
-            <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm text-slate-500">申报次数</p>
-                  <p className="mt-3 font-display text-4xl text-slate-900">{formatInteger(metrics.declarations)}</p>
+          {activeView === 'overview' ? (
+            <>
+              <section className="mt-8">
+                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+                  <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm text-slate-500">申报次数</p>
+                        <p className="mt-3 font-display text-4xl text-slate-900">{formatInteger(metrics.declarations)}</p>
+                      </div>
+                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white">
+                        <Database size={20} />
+                      </div>
+                    </div>
+                    <p className="mt-4 text-sm text-slate-500">{filteredRows.length.toLocaleString('zh-CN')} 条聚合记录</p>
+                  </div>
+                </motion.div>
+              </section>
+
+              <section className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+                {cards.slice(1).map((card, index) => (
+                  <motion.div
+                    key={card.title}
+                    initial={{ opacity: 0, y: 14 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                  >
+                    <StatCard {...card} />
+                  </motion.div>
+                ))}
+              </section>
+
+              <section className="mt-8 grid gap-8 xl:grid-cols-[1.25fr_0.75fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Trend</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">举证准确率与精准通过率趋势</h2>
+                    </div>
+                    <div className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">
+                      {dataset.rows.length ? `共 ${trendData.length} 天` : '等待导入'}
+                    </div>
+                  </div>
+
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={trendData}>
+                        <defs>
+                          <linearGradient id="proofAccuracyFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#0f766e" stopOpacity={0.24} />
+                            <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
+                        <Tooltip content={<RateTrendTooltip />} />
+                        <Area
+                          type="monotone"
+                          dataKey="proofAccuracy"
+                          stroke="#0f766e"
+                          fill="url(#proofAccuracyFill)"
+                          strokeWidth={2.5}
+                          name="举证准确率"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="exactPassRate"
+                          stroke="#1d4ed8"
+                          fill="transparent"
+                          strokeWidth={2.5}
+                          name="精准通过率"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                  <Database size={20} />
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Ranking</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">高频属性项</h2>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topAttributes} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
+                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
+                        <XAxis type="number" hide />
+                        <YAxis
+                          type="category"
+                          dataKey="attribute"
+                          width={88}
+                          tickLine={false}
+                          axisLine={false}
+                          fontSize={12}
+                        />
+                        <Tooltip />
+                        <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
-              </div>
-              <p className="mt-4 text-sm text-slate-500">{filteredRows.length.toLocaleString('zh-CN')} 条聚合记录</p>
-            </div>
-          </motion.div>
-        </section>
+              </section>
+            </>
+          ) : activeView === 'compare' ? (
+            <>
+              <section className="mt-8 grid gap-5 xl:grid-cols-5">
+                {compareCards.map((card, index) => (
+                  <motion.div
+                    key={card.title}
+                    initial={{ opacity: 0, y: 14 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                  >
+                    <CompareCard
+                      title={card.title}
+                      leftValue={card.formatter(card.leftValue)}
+                      rightValue={card.formatter(card.rightValue)}
+                      deltaValue={card.leftValue - card.rightValue}
+                      formatter={card.formatter}
+                    />
+                  </motion.div>
+                ))}
+              </section>
 
-        <section className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-          {cards.slice(1).map((card, index) => (
-            <motion.div
-              key={card.title}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-            >
-              <StatCard {...card} />
-            </motion.div>
-          ))}
-        </section>
+              <section className="mt-8">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Comparison</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">区间概览</h2>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">
+                      {compareModeReady ? '已选择双区间' : '请先完成 A/B 区间选择'}
+                    </span>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <CompareSummaryBlock
+                      title="区间 A"
+                      dateText={`${formatDateDisplay(compareLeftStart) || '未选'} → ${formatDateDisplay(compareLeftEnd) || '未选'}`}
+                      metrics={compareLeftMetrics}
+                      rowCount={compareLeftRows.length}
+                    />
+                    <CompareSummaryBlock
+                      title="区间 B"
+                      dateText={`${formatDateDisplay(compareRightStart) || '未选'} → ${formatDateDisplay(compareRightEnd) || '未选'}`}
+                      metrics={compareRightMetrics}
+                      rowCount={compareRightRows.length}
+                    />
+                  </div>
+                </div>
+              </section>
 
-        <section className="mt-8 grid gap-8 xl:grid-cols-[1.25fr_0.75fr]">
-          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-            <div className="mb-6 flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Trend</p>
-                <h2 className="mt-2 font-display text-2xl text-slate-900">举证准确率与精准通过率趋势</h2>
-              </div>
-              <div className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">
-                {dataset.rows.length ? `共 ${trendData.length} 天` : '等待导入'}
-              </div>
-            </div>
+              <section className="mt-8 grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Trend Compare</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">双区间趋势对比</h2>
+                      <p className="mt-2 text-sm text-slate-500">按区间内第 N 天对齐比较举证准确率，不直接按自然日对齐。</p>
+                    </div>
+                    <div className="text-xs text-slate-500">举证准确率</div>
+                  </div>
+                  <div className="h-[340px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={compareTrend.rows}>
+                        <defs>
+                          <linearGradient id="compareLeftFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#0f766e" stopOpacity={0.22} />
+                            <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis dataKey="dayLabel" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
+                        <Tooltip content={<CompareTrendTooltip />} />
+                        <Area
+                          type="monotone"
+                          dataKey="leftProofAccuracy"
+                          stroke="#0f766e"
+                          fill="url(#compareLeftFill)"
+                          strokeWidth={2.5}
+                          name={`区间A ${compareTrend.leftLabel}`}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="rightProofAccuracy"
+                          stroke="#1d4ed8"
+                          fill="transparent"
+                          strokeWidth={2.5}
+                          name={`区间B ${compareTrend.rightLabel}`}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
 
-            <div className="h-[320px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={trendData}>
-                  <defs>
-                    <linearGradient id="proofAccuracyFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#0f766e" stopOpacity={0.24} />
-                      <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
-                  <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
-                  <Tooltip content={<RateTrendTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="proofAccuracy"
-                    stroke="#0f766e"
-                    fill="url(#proofAccuracyFill)"
-                    strokeWidth={2.5}
-                    name="举证准确率"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="exactPassRate"
-                    stroke="#1d4ed8"
-                    fill="transparent"
-                    strokeWidth={2.5}
-                    name="精准通过率"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6 flex items-end justify-between gap-4">
+                    <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Compare</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">场次对比</h2>
+                      <p className="mt-2 text-sm text-slate-500">选择一个场次后查看 A/B 区间下的举证准确率与申报次数。</p>
+                    </div>
+                    <div className="w-full max-w-[240px]">
+                      <FilterSelect
+                        label="选择场次"
+                        icon={<Layers3 size={16} />}
+                        value={compareSessionSelection}
+                        options={compareSessionOptions}
+                        onChange={setCompareSessionSelection}
+                        tone="light"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {compareSelectedSession ? (
+                        <div
+                          key={compareSelectedSession.session}
+                          className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3"
+                        >
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <p className="font-medium text-slate-900">{compareSelectedSession.session}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                A申报 {formatInteger(compareSelectedSession.leftDeclarations)} / B申报 {formatInteger(compareSelectedSession.rightDeclarations)}
+                              </p>
+                            </div>
+                            <DeltaBadge
+                              delta={compareSelectedSession.leftProofAccuracy - compareSelectedSession.rightProofAccuracy}
+                              formatter={formatPercent}
+                            />
+                          </div>
+                          <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">区间 A</p>
+                              <p className="mt-1 font-medium text-slate-900">{formatPercent(compareSelectedSession.leftProofAccuracy)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">区间 B</p>
+                              <p className="mt-1 font-medium text-slate-900">{formatPercent(compareSelectedSession.rightProofAccuracy)}</p>
+                            </div>
+                          </div>
+                        </div>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+                        先选择两个完整区间，再查看场次对比。
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
 
-          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-            <div className="mb-6">
-              <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Ranking</p>
-              <h2 className="mt-2 font-display text-2xl text-slate-900">高频属性项</h2>
-            </div>
-            <div className="h-[320px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topAttributes} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
-                  <CartesianGrid horizontal={false} stroke="#eef2f7" />
-                  <XAxis type="number" hide />
-                  <YAxis
-                    type="category"
-                    dataKey="attribute"
-                    width={88}
-                    tickLine={false}
-                    axisLine={false}
-                    fontSize={12}
-                  />
-                  <Tooltip />
-                  <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </section>
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="mb-5 flex items-end justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Batch Compare</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">批次对比</h2>
+                    <p className="mt-2 text-sm text-slate-500">选择两个批次，图示比较它们在 A/B 区间下的举证准确率。</p>
+                  </div>
+                  <div className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+                    当前对比指标：举证准确率
+                  </div>
+                </div>
+                <div className="grid gap-4 lg:grid-cols-[260px_260px_1fr]">
+                  {compareBatchRows.length ? (
+                    <>
+                      <FilterSelect
+                        label="批次一"
+                        icon={<Boxes size={16} />}
+                        value={compareBatchFirstSelection}
+                        options={compareBatchOptions}
+                        onChange={setCompareBatchFirstSelection}
+                        tone="light"
+                      />
+                      <FilterSelect
+                        label="批次二"
+                        icon={<Boxes size={16} />}
+                        value={compareBatchSecondSelection}
+                        options={compareBatchOptions}
+                        onChange={setCompareBatchSecondSelection}
+                        tone="light"
+                      />
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                        <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                          <span className="rounded-full bg-white px-3 py-1.5">
+                            {compareSelectedBatchFirst?.batch ?? '批次一'}：A申报 {formatInteger(compareSelectedBatchFirst?.leftDeclarations ?? 0)} / B申报 {formatInteger(compareSelectedBatchFirst?.rightDeclarations ?? 0)}
+                          </span>
+                          <span className="rounded-full bg-white px-3 py-1.5">
+                            {compareSelectedBatchSecond?.batch ?? '批次二'}：A申报 {formatInteger(compareSelectedBatchSecond?.leftDeclarations ?? 0)} / B申报 {formatInteger(compareSelectedBatchSecond?.rightDeclarations ?? 0)}
+                          </span>
+                        </div>
+                        <div className="h-[280px] w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={compareBatchChartData} barGap={18}>
+                              <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                              <XAxis dataKey="metric" tickLine={false} axisLine={false} fontSize={12} />
+                              <YAxis
+                                tickLine={false}
+                                axisLine={false}
+                                fontSize={12}
+                                domain={[0, 1]}
+                                tickFormatter={(value) => `${Math.round(value * 100)}%`}
+                              />
+                              <Tooltip content={<RateTrendTooltip />} />
+                              <Bar
+                                dataKey={compareSelectedBatchFirst?.batch ?? '批次一'}
+                                radius={[10, 10, 0, 0]}
+                                fill="#0f766e"
+                              />
+                              <Bar
+                                dataKey={compareSelectedBatchSecond?.batch ?? '批次二'}
+                                radius={[10, 10, 0, 0]}
+                                fill="#1d4ed8"
+                              />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500 lg:col-span-3">
+                      先选择两个完整区间，再查看批次对比。
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="mt-8 grid gap-5 xl:grid-cols-4">
+                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+                  <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
+                    <p className="text-sm text-slate-500">当前属性项</p>
+                    <p className="mt-3 font-display text-3xl text-slate-900">{attributeFilter === ALL_OPTION ? '全部属性项' : attributeFilter}</p>
+                    <p className="mt-4 text-sm text-slate-500">建议先在顶部筛选区选择一个具体属性项，再查看下方的时间、场次和批次表现。</p>
+                  </div>
+                </motion.div>
+                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+                  <StatCard title="申报次数" value={formatInteger(metrics.declarations)} hint={`${filteredRows.length.toLocaleString('zh-CN')} 条聚合记录`} tone="slate" icon={<Database size={18} />} />
+                </motion.div>
+                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+                  <StatCard title="举证准确率" value={formatPercent(metrics.proofAccuracy)} hint="当前属性项口径" tone="emerald" icon={<ShieldCheck size={18} />} />
+                </motion.div>
+                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+                  <StatCard title="精准通过率" value={formatPercent(metrics.exactPassRate)} hint="当前属性项口径" tone="blue" icon={<Target size={18} />} />
+                </motion.div>
+              </section>
+
+              <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Attribute Trend</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">属性项时间趋势</h2>
+                      <p className="mt-2 text-sm text-slate-500">查看当前属性项在筛选区间内的举证准确率与精准通过率变化。</p>
+                    </div>
+                    <div className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">共 {trendData.length} 天</div>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={trendData}>
+                        <defs>
+                          <linearGradient id="attributeProofFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#0f766e" stopOpacity={0.24} />
+                            <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
+                        <Tooltip content={<RateTrendTooltip />} />
+                        <Area type="monotone" dataKey="proofAccuracy" stroke="#0f766e" fill="url(#attributeProofFill)" strokeWidth={2.5} name="举证准确率" />
+                        <Area type="monotone" dataKey="exactPassRate" stroke="#1d4ed8" fill="transparent" strokeWidth={2.5} name="精准通过率" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Attribute Ranking</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">高频属性项参考</h2>
+                    <p className="mt-2 text-sm text-slate-500">如果还没锁定要分析的属性项，可以先看当前筛选下申报次数靠前的属性项。</p>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topAttributes} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
+                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
+                        <XAxis type="number" hide />
+                        <YAxis type="category" dataKey="attribute" width={96} tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip />
+                        <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </section>
+
+              <section className="mt-8 grid gap-8 xl:grid-cols-2">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Breakdown</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">场次表现</h2>
+                    <p className="mt-2 text-sm text-slate-500">当前属性项在不同场次下的举证准确率。</p>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={attributeSessionRows} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
+                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
+                        <XAxis type="number" domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
+                        <YAxis type="category" dataKey="name" width={96} tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip content={<RateTrendTooltip />} />
+                        <Bar dataKey="proofAccuracy" radius={[0, 10, 10, 0]} fill="#0f766e" name="举证准确率" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Batch Breakdown</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">批次表现</h2>
+                    <p className="mt-2 text-sm text-slate-500">当前属性项在不同批次下的举证准确率。</p>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={attributeBatchRows} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
+                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
+                        <XAxis type="number" domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
+                        <YAxis type="category" dataKey="name" width={96} tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip content={<RateTrendTooltip />} />
+                        <Bar dataKey="proofAccuracy" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="举证准确率" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function SidebarNavItem({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
+        active
+          ? 'bg-[linear-gradient(90deg,_rgba(0,216,255,0.22)_0%,_rgba(0,216,255,0.08)_100%)] text-cyan-300 shadow-[inset_4px_0_0_#22d3ee]'
+          : 'text-slate-400 hover:bg-white/5 hover:text-white'
+      }`}
+    >
+      <span>{icon}</span>
+      <span className="text-lg font-medium">{label}</span>
+    </button>
+  );
+}
+
+function MobileNavChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+        active ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -654,23 +1526,33 @@ function FilterSelect({
   options,
   onChange,
   icon,
+  tone = 'dark',
 }: {
   label: string;
   value: string;
   options: string[];
   onChange: (value: string) => void;
   icon: React.ReactNode;
+  tone?: 'dark' | 'light';
 }) {
   return (
     <label className="block">
-      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+      <span
+        className={`mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${
+          tone === 'dark' ? 'text-slate-400' : 'text-slate-500'
+        }`}
+      >
         {icon}
         {label}
       </span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
+        className={`w-full rounded-2xl px-4 py-2.5 text-sm outline-none transition ${
+          tone === 'dark'
+            ? 'border border-white/10 bg-white/8 text-white focus:border-white/40'
+            : 'border border-slate-200 bg-white text-slate-900 focus:border-slate-400'
+        }`}
       >
         {options.map((option) => (
           <option key={option} value={option} className="text-slate-900">
@@ -683,6 +1565,7 @@ function FilterSelect({
 }
 
 function DateRangeFilter({
+  label = '日期区间',
   startValue,
   endValue,
   options,
@@ -690,6 +1573,7 @@ function DateRangeFilter({
   onEndChange,
   onClear,
 }: {
+  label?: string;
   startValue: string;
   endValue: string;
   options: string[];
@@ -700,8 +1584,9 @@ function DateRangeFilter({
   const hasValue = startValue !== ALL_OPTION || endValue !== ALL_OPTION;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [draftRange, setDraftRange] = useState<DateRange | undefined>(undefined);
+  const [visibleMonth, setVisibleMonth] = useState<Date | undefined>(undefined);
   const availableDates = options.filter((option) => option !== ALL_OPTION);
-  const availableDateSet = new Set(availableDates);
   const minDate = availableDates[0] ? parseISO(availableDates[0]) : undefined;
   const maxDate = availableDates.length ? parseISO(availableDates[availableDates.length - 1]) : undefined;
   const visibleStartMonth = minDate ? startOfMonth(subMonths(minDate, 1)) : undefined;
@@ -713,6 +1598,16 @@ function DateRangeFilter({
           to: endValue !== ALL_OPTION ? parseDateValue(endValue) : undefined,
         }
       : undefined;
+
+  useEffect(() => {
+    setDraftRange(selectedRange);
+  }, [startValue, endValue]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setVisibleMonth(selectedRange?.from ?? minDate);
+    }
+  }, [isOpen, minDate, selectedRange]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -729,19 +1624,41 @@ function DateRangeFilter({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
-  const handleSelect = (range: DateRange | undefined) => {
+  const handleSelect = (range: DateRange | undefined, triggerDate: Date) => {
     if (!range?.from) {
       onClear();
       return;
     }
 
-    const nextStart = format(range.from, 'yyyy-MM-dd');
-    const nextEnd = range.to ? format(range.to, 'yyyy-MM-dd') : ALL_OPTION;
+    if (!draftRange?.from || draftRange.to) {
+      const nextRange = { from: triggerDate, to: undefined };
+      setDraftRange(nextRange);
+      setVisibleMonth(triggerDate);
+      onStartChange(format(triggerDate, 'yyyy-MM-dd'));
+      onEndChange(ALL_OPTION);
+      return;
+    }
+
+    const draftStart = draftRange.from;
+    const triggerValue = format(triggerDate, 'yyyy-MM-dd');
+    const draftStartValue = format(draftStart, 'yyyy-MM-dd');
+    const normalizedRange =
+      triggerValue === draftStartValue
+        ? { from: draftStart, to: draftStart }
+        : triggerDate < draftStart
+          ? { from: triggerDate, to: draftStart }
+          : { from: draftStart, to: triggerDate };
+
+    setDraftRange(normalizedRange);
+    setVisibleMonth(normalizedRange.to ?? normalizedRange.from);
+
+    const nextStart = format(normalizedRange.from, 'yyyy-MM-dd');
+    const nextEnd = normalizedRange.to ? format(normalizedRange.to, 'yyyy-MM-dd') : ALL_OPTION;
 
     onStartChange(nextStart);
     onEndChange(nextEnd);
 
-    if (range.from && range.to) {
+    if (normalizedRange.from && normalizedRange.to) {
       setIsOpen(false);
     }
   };
@@ -750,15 +1667,19 @@ function DateRangeFilter({
     <div className="relative md:col-span-2 xl:col-span-2" ref={containerRef}>
       <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
         <CalendarDays size={16} />
-        日期区间
+        {label}
       </span>
       <div
         role="button"
         tabIndex={0}
-        onClick={() => setIsOpen((value) => !value)}
+        onClick={() => {
+          setVisibleMonth(selectedRange?.from ?? minDate);
+          setIsOpen((value) => !value);
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
+            setVisibleMonth(selectedRange?.from ?? minDate);
             setIsOpen((value) => !value);
           }
         }}
@@ -794,13 +1715,17 @@ function DateRangeFilter({
             numberOfMonths={2}
             pagedNavigation
             weekStartsOn={0}
-            selected={selectedRange}
+            month={visibleMonth}
+            onMonthChange={setVisibleMonth}
+            selected={draftRange}
             onSelect={handleSelect}
-            defaultMonth={selectedRange?.from ?? minDate}
             startMonth={visibleStartMonth}
             endMonth={visibleEndMonth}
             showOutsideDays
-            disabled={(date) => !availableDateSet.has(format(date, 'yyyy-MM-dd'))}
+            disabled={[
+              ...(minDate ? [{ before: minDate }] : []),
+              ...(maxDate ? [{ after: maxDate }] : []),
+            ]}
             className="date-range-picker"
             formatters={{
               formatCaption: (date) => format(date, 'yyyy年 M月', { locale: zhCN }),
@@ -847,6 +1772,102 @@ function ToolbarChip({ icon, label }: { icon: React.ReactNode; label: string }) 
   );
 }
 
+function CompareCard({
+  title,
+  leftValue,
+  rightValue,
+  deltaValue,
+  formatter,
+}: {
+  title: string;
+  leftValue: string;
+  rightValue: string;
+  deltaValue: number;
+  formatter: (value: number) => string;
+}) {
+  return (
+    <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
+      <p className="text-sm text-slate-500">{title}</p>
+      <div className="mt-4 grid gap-3">
+        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">区间 A</p>
+          <p className="mt-2 font-display text-2xl text-slate-900">{leftValue}</p>
+        </div>
+        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">区间 B</p>
+          <p className="mt-2 font-display text-2xl text-slate-900">{rightValue}</p>
+        </div>
+      </div>
+      <div className="mt-4">
+        <DeltaBadge delta={deltaValue} formatter={formatter} />
+      </div>
+    </div>
+  );
+}
+
+function CompareSummaryBlock({
+  title,
+  dateText,
+  metrics,
+  rowCount,
+}: {
+  title: string;
+  dateText: string;
+  metrics: ReturnType<typeof aggregateMetrics>;
+  rowCount: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50/90 p-4">
+      <p className="text-sm font-medium text-slate-900">{title}</p>
+      <p className="mt-1 text-xs text-slate-500">{dateText}</p>
+      <div className="mt-4 space-y-2 text-sm text-slate-600">
+        <div className="flex items-center justify-between">
+          <span>申报次数</span>
+          <span className="font-medium text-slate-900">{formatInteger(metrics.declarations)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>举证准确率</span>
+          <span className="font-medium text-slate-900">{formatPercent(metrics.proofAccuracy)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>精准通过率</span>
+          <span className="font-medium text-slate-900">{formatPercent(metrics.exactPassRate)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>记录数</span>
+          <span className="font-medium text-slate-900">{formatInteger(rowCount)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeltaBadge({
+  delta,
+  formatter,
+}: {
+  delta: number;
+  formatter: (value: number) => string;
+}) {
+  const isPositive = delta > 0;
+  const isNegative = delta < 0;
+
+  return (
+    <div
+      className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium ${
+        isPositive
+          ? 'bg-emerald-50 text-emerald-700'
+          : isNegative
+            ? 'bg-rose-50 text-rose-700'
+            : 'bg-slate-100 text-slate-600'
+      }`}
+    >
+      {isPositive ? <ArrowUpRight size={16} /> : isNegative ? <ArrowDownRight size={16} /> : <Minus size={16} />}
+      差值 {formatter(Math.abs(delta))}
+    </div>
+  );
+}
+
 function RateTrendTooltip({
   active,
   payload,
@@ -874,6 +1895,48 @@ function RateTrendTooltip({
               <span>{entry.name}</span>
             </div>
             <span className="font-medium text-slate-900">{formatPercent(entry.value ?? 0)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompareTrendTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ color?: string; name?: string; value?: number | null; payload?: { leftDate?: string; rightDate?: string } }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+
+  const row = payload[0]?.payload;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-xl shadow-slate-900/10 backdrop-blur">
+      <p className="text-sm font-medium text-slate-900">{label}</p>
+      <div className="mt-1 space-y-1 text-xs text-slate-500">
+        <div>区间 A 日期：{row?.leftDate ?? '-'}</div>
+        <div>区间 B 日期：{row?.rightDate ?? '-'}</div>
+      </div>
+      <div className="mt-2 space-y-2">
+        {payload.map((entry) => (
+          <div key={entry.name} className="flex items-center justify-between gap-4 text-sm">
+            <div className="flex items-center gap-2 text-slate-600">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: entry.color ?? '#94a3b8' }}
+              />
+              <span>{entry.name}</span>
+            </div>
+            <span className="font-medium text-slate-900">
+              {entry.value == null ? '-' : formatPercent(entry.value)}
+            </span>
           </div>
         ))}
       </div>
