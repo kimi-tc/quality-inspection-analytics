@@ -112,6 +112,17 @@
     color: #cbd5e1;
   }
 
+  .rdp-disabled .rdp-day-button {
+    color: #cbd5e1;
+    background: transparent;
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .rdp-disabled .rdp-day-button:hover {
+    background: transparent;
+  }
+
   .rdp-range-middle .rdp-day-button {
     background: #dbeafe;
   }

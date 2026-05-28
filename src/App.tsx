@@ -1,7 +1,7 @@
 import React, { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { DayPicker, type DateRange } from 'react-day-picker';
-import { format, parseISO } from 'date-fns';
+import { addMonths, format, parseISO, startOfMonth, subMonths } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import {
   ResponsiveContainer,
@@ -434,7 +434,7 @@ function App() {
                   </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <h1 className="font-display text-2xl font-semibold text-slate-900">周数据交互查询工具</h1>
+                      <h1 className="font-display text-2xl font-semibold text-slate-900">预质检质量看板</h1>
                       <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
                         {isLoading ? '加载中' : '每周复用'}
                       </span>
@@ -701,13 +701,16 @@ function DateRangeFilter({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const availableDates = options.filter((option) => option !== ALL_OPTION);
+  const availableDateSet = new Set(availableDates);
   const minDate = availableDates[0] ? parseISO(availableDates[0]) : undefined;
   const maxDate = availableDates.length ? parseISO(availableDates[availableDates.length - 1]) : undefined;
+  const visibleStartMonth = minDate ? startOfMonth(subMonths(minDate, 1)) : undefined;
+  const visibleEndMonth = maxDate ? startOfMonth(addMonths(maxDate, 1)) : undefined;
   const selectedRange: DateRange | undefined =
     startValue !== ALL_OPTION || endValue !== ALL_OPTION
       ? {
           from: parseDateValue(startValue),
-          to: parseDateValue(endValue),
+          to: endValue !== ALL_OPTION ? parseDateValue(endValue) : undefined,
         }
       : undefined;
 
@@ -733,7 +736,7 @@ function DateRangeFilter({
     }
 
     const nextStart = format(range.from, 'yyyy-MM-dd');
-    const nextEnd = range.to ? format(range.to, 'yyyy-MM-dd') : nextStart;
+    const nextEnd = range.to ? format(range.to, 'yyyy-MM-dd') : ALL_OPTION;
 
     onStartChange(nextStart);
     onEndChange(nextEnd);
@@ -790,12 +793,14 @@ function DateRangeFilter({
             mode="range"
             numberOfMonths={2}
             pagedNavigation
+            weekStartsOn={0}
             selected={selectedRange}
             onSelect={handleSelect}
             defaultMonth={selectedRange?.from ?? minDate}
-            startMonth={minDate}
-            endMonth={maxDate}
+            startMonth={visibleStartMonth}
+            endMonth={visibleEndMonth}
             showOutsideDays
+            disabled={(date) => !availableDateSet.has(format(date, 'yyyy-MM-dd'))}
             className="date-range-picker"
             formatters={{
               formatCaption: (date) => format(date, 'yyyy年 M月', { locale: zhCN }),
@@ -820,6 +825,7 @@ function DateRangeFilter({
               range_end: 'rdp-range-end',
               outside: 'rdp-outside',
               today: 'rdp-today',
+              disabled: 'rdp-disabled',
             }}
             components={{
               Chevron: ({ orientation }) =>

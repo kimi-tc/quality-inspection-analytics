@@ -99,8 +99,8 @@ launchctl list | grep weekly-inspection
 
 ```bash
 cd ~/quality-inspection-analytics
-git pull
-launchctl kickstart -k gui/$(id -u)/com.kimi.weekly-inspection-analytics
+chmod +x scripts/update-local-prod.sh
+./scripts/update-local-prod.sh
 ```
 
 ## 7. Logs
