@@ -984,7 +984,7 @@ function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <ToolbarChip icon={<FileSpreadsheet size={14} />} label={dataset.sourceName || '尚未导入文件'} />
+                    <ToolbarChip icon={<FileSpreadsheet size={14} />} label={dataset.sourceName || '尚未导入文件'} wide />
                     <ToolbarChip
                       icon={<CalendarDays size={14} />}
                       label={dataset.importedAt ? new Date(dataset.importedAt).toLocaleString('zh-CN') : '未导入'}
@@ -2031,11 +2031,16 @@ function DateRangeFilter({
   );
 }
 
-function ToolbarChip({ icon, label }: { icon: React.ReactNode; label: string }) {
+function ToolbarChip({ icon, label, wide = false }: { icon: React.ReactNode; label: string; wide?: boolean }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
-      <span className="text-slate-400">{icon}</span>
-      <span className="max-w-[240px] truncate">{label}</span>
+    <div
+      className={`inline-flex items-start gap-2 rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-1.5 ${
+        wide ? 'max-w-full sm:max-w-[520px]' : ''
+      }`}
+      title={label}
+    >
+      <span className="mt-0.5 shrink-0 text-slate-400">{icon}</span>
+      <span className={wide ? 'whitespace-normal break-all leading-5' : 'max-w-[240px] truncate'}>{label}</span>
     </div>
   );
 }
