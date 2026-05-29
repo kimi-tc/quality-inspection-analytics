@@ -997,123 +997,135 @@ function App() {
 
             <div className="mt-4 rounded-[28px] bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] p-4 text-white">
               <div className="flex flex-col gap-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto] xl:items-end">
-                  {activeView !== 'compare' ? (
-                    <>
-                      <DateRangeFilter
-                        label="日期区间"
-                        startValue={startDateFilter}
-                        endValue={endDateFilter}
-                        options={options.dates}
-                        onStartChange={setStartDateFilter}
-                        onEndChange={setEndDateFilter}
-                        onClear={() => {
-                          setStartDateFilter(ALL_OPTION);
-                          setEndDateFilter(ALL_OPTION);
-                        }}
-                      />
-                      <WeekQuickSelect
-                        label="周区间"
-                        value={getWeekValue(startDateFilter, endDateFilter, weekOptions)}
-                        options={weekOptions}
-                        onChange={(week) => {
-                          setStartDateFilter(week.start);
-                          setEndDateFilter(week.end);
-                        }}
-                        onClear={() => {
-                          setStartDateFilter(ALL_OPTION);
-                          setEndDateFilter(ALL_OPTION);
-                        }}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <DateRangeFilter
-                        label="区间A"
-                        startValue={compareLeftStart}
-                        endValue={compareLeftEnd}
-                        options={options.dates}
-                        onStartChange={setCompareLeftStart}
-                        onEndChange={setCompareLeftEnd}
-                        onClear={() => {
-                          setCompareLeftStart(ALL_OPTION);
-                          setCompareLeftEnd(ALL_OPTION);
-                        }}
-                      />
-                      <WeekQuickSelect
-                        label="A周"
-                        value={getWeekValue(compareLeftStart, compareLeftEnd, weekOptions)}
-                        options={weekOptions}
-                        onChange={(week) => {
-                          setCompareLeftStart(week.start);
-                          setCompareLeftEnd(week.end);
-                        }}
-                        onClear={() => {
-                          setCompareLeftStart(ALL_OPTION);
-                          setCompareLeftEnd(ALL_OPTION);
-                        }}
-                      />
-                      <DateRangeFilter
-                        label="区间B"
-                        startValue={compareRightStart}
-                        endValue={compareRightEnd}
-                        options={options.dates}
-                        onStartChange={setCompareRightStart}
-                        onEndChange={setCompareRightEnd}
-                        onClear={() => {
-                          setCompareRightStart(ALL_OPTION);
-                          setCompareRightEnd(ALL_OPTION);
-                        }}
-                      />
-                      <WeekQuickSelect
-                        label="B周"
-                        value={getWeekValue(compareRightStart, compareRightEnd, weekOptions)}
-                        options={weekOptions}
-                        onChange={(week) => {
-                          setCompareRightStart(week.start);
-                          setCompareRightEnd(week.end);
-                        }}
-                        onClear={() => {
-                          setCompareRightStart(ALL_OPTION);
-                          setCompareRightEnd(ALL_OPTION);
-                        }}
-                      />
-                    </>
-                  )}
-                  <FilterSelect
-                    label="场次"
-                    icon={<Layers3 size={16} />}
-                    value={sessionFilter}
-                    options={options.sessions}
-                    onChange={setSessionFilter}
-                  />
-                  <FilterSelect
-                    label="批次"
-                    icon={<Boxes size={16} />}
-                    value={batchFilter}
-                    options={options.batches}
-                    onChange={setBatchFilter}
-                  />
-                  <FilterSelect
-                    label="属性项"
-                    icon={<Tags size={16} />}
-                    value={attributeFilter}
-                    options={options.attributes}
-                    onChange={setAttributeFilter}
-                  />
-                  <details className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200 md:col-span-2 xl:col-span-full">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium marker:content-none">
-                      当前口径
-                      <ChevronDown size={16} className="shrink-0" />
-                    </summary>
-                    <ul className="mt-3 space-y-2 text-xs leading-6 text-slate-300">
-                      <li>举证准确率 = (申报次数 - 模糊通过次数 - 举证未通过次数) / 申报次数</li>
-                      <li>精准通过率 = (申报次数 - 模糊通过次数 - 未通过次数) / 申报次数</li>
-                      <li>模棱两可率 = 模糊通过次数 / 申报次数</li>
-                      <li>拒绝率 = 未通过次数 / 申报次数</li>
-                    </ul>
-                  </details>
-                </div>
+                {activeView === 'compare' ? (
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <ComparePeriodPanel
+                      title="区间 A"
+                      tone="emerald"
+                      startValue={compareLeftStart}
+                      endValue={compareLeftEnd}
+                      dateOptions={options.dates}
+                      weekValue={getWeekValue(compareLeftStart, compareLeftEnd, weekOptions)}
+                      weekOptions={weekOptions}
+                      onStartChange={setCompareLeftStart}
+                      onEndChange={setCompareLeftEnd}
+                      onWeekChange={(week) => {
+                        setCompareLeftStart(week.start);
+                        setCompareLeftEnd(week.end);
+                      }}
+                      onClear={() => {
+                        setCompareLeftStart(ALL_OPTION);
+                        setCompareLeftEnd(ALL_OPTION);
+                      }}
+                    />
+                    <ComparePeriodPanel
+                      title="区间 B"
+                      tone="blue"
+                      startValue={compareRightStart}
+                      endValue={compareRightEnd}
+                      dateOptions={options.dates}
+                      weekValue={getWeekValue(compareRightStart, compareRightEnd, weekOptions)}
+                      weekOptions={weekOptions}
+                      onStartChange={setCompareRightStart}
+                      onEndChange={setCompareRightEnd}
+                      onWeekChange={(week) => {
+                        setCompareRightStart(week.start);
+                        setCompareRightEnd(week.end);
+                      }}
+                      onClear={() => {
+                        setCompareRightStart(ALL_OPTION);
+                        setCompareRightEnd(ALL_OPTION);
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(3,minmax(150px,1fr))] xl:items-end">
+                    <DateRangeFilter
+                      label="日期区间"
+                      startValue={startDateFilter}
+                      endValue={endDateFilter}
+                      options={options.dates}
+                      onStartChange={setStartDateFilter}
+                      onEndChange={setEndDateFilter}
+                      onClear={() => {
+                        setStartDateFilter(ALL_OPTION);
+                        setEndDateFilter(ALL_OPTION);
+                      }}
+                      compact
+                    />
+                    <WeekQuickSelect
+                      label="周区间"
+                      value={getWeekValue(startDateFilter, endDateFilter, weekOptions)}
+                      options={weekOptions}
+                      onChange={(week) => {
+                        setStartDateFilter(week.start);
+                        setEndDateFilter(week.end);
+                      }}
+                      onClear={() => {
+                        setStartDateFilter(ALL_OPTION);
+                        setEndDateFilter(ALL_OPTION);
+                      }}
+                    />
+                    <FilterSelect
+                      label="场次"
+                      icon={<Layers3 size={16} />}
+                      value={sessionFilter}
+                      options={options.sessions}
+                      onChange={setSessionFilter}
+                    />
+                    <FilterSelect
+                      label="批次"
+                      icon={<Boxes size={16} />}
+                      value={batchFilter}
+                      options={options.batches}
+                      onChange={setBatchFilter}
+                    />
+                    <FilterSelect
+                      label="属性项"
+                      icon={<Tags size={16} />}
+                      value={attributeFilter}
+                      options={options.attributes}
+                      onChange={setAttributeFilter}
+                    />
+                  </div>
+                )}
+                {activeView === 'compare' ? (
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <FilterSelect
+                      label="场次"
+                      icon={<Layers3 size={16} />}
+                      value={sessionFilter}
+                      options={options.sessions}
+                      onChange={setSessionFilter}
+                    />
+                    <FilterSelect
+                      label="批次"
+                      icon={<Boxes size={16} />}
+                      value={batchFilter}
+                      options={options.batches}
+                      onChange={setBatchFilter}
+                    />
+                    <FilterSelect
+                      label="属性项"
+                      icon={<Tags size={16} />}
+                      value={attributeFilter}
+                      options={options.attributes}
+                      onChange={setAttributeFilter}
+                    />
+                  </div>
+                ) : null}
+                <details className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium marker:content-none">
+                    当前口径
+                    <ChevronDown size={16} className="shrink-0" />
+                  </summary>
+                  <ul className="mt-3 space-y-2 text-xs leading-6 text-slate-300">
+                    <li>举证准确率 = (申报次数 - 模糊通过次数 - 举证未通过次数) / 申报次数</li>
+                    <li>精准通过率 = (申报次数 - 模糊通过次数 - 未通过次数) / 申报次数</li>
+                    <li>模棱两可率 = 模糊通过次数 / 申报次数</li>
+                    <li>拒绝率 = 未通过次数 / 申报次数</li>
+                  </ul>
+                </details>
               </div>
             </div>
           </div>
@@ -1714,6 +1726,74 @@ function WeekQuickSelect({
   );
 }
 
+function ComparePeriodPanel({
+  title,
+  tone,
+  startValue,
+  endValue,
+  dateOptions,
+  weekValue,
+  weekOptions,
+  onStartChange,
+  onEndChange,
+  onWeekChange,
+  onClear,
+}: {
+  title: string;
+  tone: 'emerald' | 'blue';
+  startValue: string;
+  endValue: string;
+  dateOptions: string[];
+  weekValue: string;
+  weekOptions: WeekOption[];
+  onStartChange: (value: string) => void;
+  onEndChange: (value: string) => void;
+  onWeekChange: (week: WeekOption) => void;
+  onClear: () => void;
+}) {
+  const toneClass =
+    tone === 'emerald'
+      ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-200'
+      : 'border-blue-300/40 bg-blue-400/10 text-blue-200';
+
+  return (
+    <div className={`rounded-[22px] border p-4 ${toneClass}`}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <span className={`h-2.5 w-2.5 rounded-full ${tone === 'emerald' ? 'bg-emerald-300' : 'bg-blue-300'}`} />
+          {title}
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-200 transition hover:bg-white/10"
+        >
+          清空
+        </button>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(280px,1.4fr)_minmax(180px,0.9fr)]">
+        <DateRangeFilter
+          label="日期区间"
+          startValue={startValue}
+          endValue={endValue}
+          options={dateOptions}
+          onStartChange={onStartChange}
+          onEndChange={onEndChange}
+          onClear={onClear}
+          compact
+        />
+        <WeekQuickSelect
+          label="周区间"
+          value={weekValue}
+          options={weekOptions}
+          onChange={onWeekChange}
+          onClear={onClear}
+        />
+      </div>
+    </div>
+  );
+}
+
 function DateRangeFilter({
   label = '日期区间',
   startValue,
@@ -1722,6 +1802,7 @@ function DateRangeFilter({
   onStartChange,
   onEndChange,
   onClear,
+  compact = false,
 }: {
   label?: string;
   startValue: string;
@@ -1730,6 +1811,7 @@ function DateRangeFilter({
   onStartChange: (value: string) => void;
   onEndChange: (value: string) => void;
   onClear: () => void;
+  compact?: boolean;
 }) {
   const hasValue = startValue !== ALL_OPTION || endValue !== ALL_OPTION;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1814,7 +1896,7 @@ function DateRangeFilter({
   };
 
   return (
-    <div className="relative md:col-span-2 xl:col-span-2" ref={containerRef}>
+    <div className={`relative ${compact ? '' : 'md:col-span-2 xl:col-span-2'}`} ref={containerRef}>
       <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
         <CalendarDays size={16} />
         {label}
@@ -1833,13 +1915,17 @@ function DateRangeFilter({
             setIsOpen((value) => !value);
           }
         }}
-        className="flex w-full items-center rounded-2xl border border-[#4B8DFF] bg-white px-5 py-3 text-left shadow-[0_8px_24px_rgba(37,99,235,0.12)] outline-none transition hover:border-[#2f7cff]"
+        className={`flex w-full items-center rounded-2xl px-5 py-3 text-left outline-none transition ${
+          compact
+            ? 'border border-white/10 bg-white/[0.08] text-white shadow-inner shadow-white/[0.03] hover:border-white/30'
+            : 'border border-[#4B8DFF] bg-white text-slate-800 shadow-[0_8px_24px_rgba(37,99,235,0.12)] hover:border-[#2f7cff]'
+        }`}
       >
-        <span className="min-w-0 flex-1 text-[15px] font-medium text-slate-800">
+        <span className={`min-w-0 flex-1 text-[15px] font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
           {formatDateDisplay(startValue) || '开始日期'}
         </span>
         <span className="mx-4 shrink-0 text-slate-400">→</span>
-        <span className="min-w-0 flex-1 text-[15px] font-medium text-slate-800">
+        <span className={`min-w-0 flex-1 text-[15px] font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
           {formatDateDisplay(endValue) || '结束日期'}
         </span>
         <button
@@ -1849,7 +1935,13 @@ function DateRangeFilter({
             onClear();
           }}
           className={`ml-3 flex h-7 w-7 items-center justify-center rounded-full transition ${
-            hasValue ? 'bg-slate-300 text-white hover:bg-slate-400' : 'bg-slate-100 text-slate-300'
+            compact
+              ? hasValue
+                ? 'bg-white/20 text-white hover:bg-white/30'
+                : 'bg-white/10 text-slate-400'
+              : hasValue
+                ? 'bg-slate-300 text-white hover:bg-slate-400'
+                : 'bg-slate-100 text-slate-300'
           }`}
           aria-label="清空日期区间"
         >
