@@ -1,7 +1,7 @@
 import React, { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { DayPicker, type DateRange } from 'react-day-picker';
-import { addMonths, format, parseISO, startOfMonth, subMonths } from 'date-fns';
+import { addDays, addMonths, format, parseISO, startOfMonth, startOfWeek, subMonths } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import {
   ResponsiveContainer,
@@ -169,12 +169,45 @@ type FilterCriteria = {
   attribute: string;
 };
 
+type WeekOption = {
+  value: string;
+  label: string;
+  start: string;
+  end: string;
+};
+
 const createOptions = (rows: ImportedRow[], key: keyof ImportedRow) =>
   [ALL_OPTION].concat(
     [...new Set(rows.map((row) => String(row[key] ?? '')).filter(Boolean))].sort((a, b) =>
       a.localeCompare(b, 'zh-CN'),
     ),
   );
+
+const createWeekOptions = (dates: string[]): WeekOption[] => {
+  const weeks = new Map<string, WeekOption>();
+
+  dates
+    .filter((date) => date !== ALL_OPTION)
+    .forEach((date) => {
+      const weekStartDate = startOfWeek(parseISO(date), { weekStartsOn: 0 });
+      const start = format(weekStartDate, 'yyyy-MM-dd');
+      const end = format(addDays(weekStartDate, 6), 'yyyy-MM-dd');
+
+      if (!weeks.has(start)) {
+        weeks.set(start, {
+          value: `${start}|${end}`,
+          label: `${start} ~ ${end}`,
+          start,
+          end,
+        });
+      }
+    });
+
+  return [...weeks.values()].sort((a, b) => b.start.localeCompare(a.start));
+};
+
+const getWeekValue = (startDate: string, endDate: string, weeks: WeekOption[]) =>
+  weeks.find((week) => week.start === startDate && week.end === endDate)?.value ?? ALL_OPTION;
 
 const filterRowsByCriteria = (rows: ImportedRow[], criteria: FilterCriteria) =>
   rows.filter((row) => {
@@ -566,6 +599,7 @@ function App() {
     }),
     [dataset.rows],
   );
+  const weekOptions = useMemo(() => createWeekOptions(options.dates), [options.dates]);
 
   const filteredRows = useMemo(
     () =>
@@ -965,18 +999,33 @@ function App() {
               <div className="flex flex-col gap-4">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto] xl:items-end">
                   {activeView !== 'compare' ? (
-                    <DateRangeFilter
-                      label="日期区间"
-                      startValue={startDateFilter}
-                      endValue={endDateFilter}
-                      options={options.dates}
-                      onStartChange={setStartDateFilter}
-                      onEndChange={setEndDateFilter}
-                      onClear={() => {
-                        setStartDateFilter(ALL_OPTION);
-                        setEndDateFilter(ALL_OPTION);
-                      }}
-                    />
+                    <>
+                      <DateRangeFilter
+                        label="日期区间"
+                        startValue={startDateFilter}
+                        endValue={endDateFilter}
+                        options={options.dates}
+                        onStartChange={setStartDateFilter}
+                        onEndChange={setEndDateFilter}
+                        onClear={() => {
+                          setStartDateFilter(ALL_OPTION);
+                          setEndDateFilter(ALL_OPTION);
+                        }}
+                      />
+                      <WeekQuickSelect
+                        label="周区间"
+                        value={getWeekValue(startDateFilter, endDateFilter, weekOptions)}
+                        options={weekOptions}
+                        onChange={(week) => {
+                          setStartDateFilter(week.start);
+                          setEndDateFilter(week.end);
+                        }}
+                        onClear={() => {
+                          setStartDateFilter(ALL_OPTION);
+                          setEndDateFilter(ALL_OPTION);
+                        }}
+                      />
+                    </>
                   ) : (
                     <>
                       <DateRangeFilter
@@ -991,6 +1040,19 @@ function App() {
                           setCompareLeftEnd(ALL_OPTION);
                         }}
                       />
+                      <WeekQuickSelect
+                        label="A周"
+                        value={getWeekValue(compareLeftStart, compareLeftEnd, weekOptions)}
+                        options={weekOptions}
+                        onChange={(week) => {
+                          setCompareLeftStart(week.start);
+                          setCompareLeftEnd(week.end);
+                        }}
+                        onClear={() => {
+                          setCompareLeftStart(ALL_OPTION);
+                          setCompareLeftEnd(ALL_OPTION);
+                        }}
+                      />
                       <DateRangeFilter
                         label="区间B"
                         startValue={compareRightStart}
@@ -998,6 +1060,19 @@ function App() {
                         options={options.dates}
                         onStartChange={setCompareRightStart}
                         onEndChange={setCompareRightEnd}
+                        onClear={() => {
+                          setCompareRightStart(ALL_OPTION);
+                          setCompareRightEnd(ALL_OPTION);
+                        }}
+                      />
+                      <WeekQuickSelect
+                        label="B周"
+                        value={getWeekValue(compareRightStart, compareRightEnd, weekOptions)}
+                        options={weekOptions}
+                        onChange={(week) => {
+                          setCompareRightStart(week.start);
+                          setCompareRightEnd(week.end);
+                        }}
                         onClear={() => {
                           setCompareRightStart(ALL_OPTION);
                           setCompareRightEnd(ALL_OPTION);
@@ -1584,6 +1659,54 @@ function FilterSelect({
         {options.map((option) => (
           <option key={option} value={option} className="text-slate-900">
             {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function WeekQuickSelect({
+  label,
+  value,
+  options,
+  onChange,
+  onClear,
+}: {
+  label: string;
+  value: string;
+  options: WeekOption[];
+  onChange: (week: WeekOption) => void;
+  onClear: () => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+        <CalendarDays size={16} />
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          if (nextValue === ALL_OPTION) {
+            onClear();
+            return;
+          }
+
+          const selectedWeek = options.find((week) => week.value === nextValue);
+          if (selectedWeek) {
+            onChange(selectedWeek);
+          }
+        }}
+        className="w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
+      >
+        <option value={ALL_OPTION} className="text-slate-900">
+          全部周
+        </option>
+        {options.map((week) => (
+          <option key={week.value} value={week.value} className="text-slate-900">
+            {week.label}
           </option>
         ))}
       </select>
