@@ -1,0 +1,230 @@
+[
+  {
+    "propertyName": "iCloud是否可注销",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "NFC功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "Root情况",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "保修期时长",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "边框背板",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "操作系统",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "侧键",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "充电功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "触摸功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "存储容量",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "电池健康度",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "电池维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "丢失/更换情况",
+    "category": "其他"
+  },
+  {
+    "propertyName": "副屏-触摸功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "副屏-屏幕外观",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "副屏-屏幕显示",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "副屏情况",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "副屏-维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "购买渠道",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "后壳维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "后摄拍摄功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "后摄维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "机身弯曲情况",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "机身颜色",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "开机情况",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "快速充电功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "零件维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "面容识别功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "内存",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "苹果保修期时长",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "屏幕传感器功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "屏幕外观",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "屏幕维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "屏幕显示",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "前摄拍摄功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "前摄维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "声音功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "实体按键功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "是否可恢复出厂设置",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "受潮状况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "售后案例情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "售后补充项",
+    "category": "其他"
+  },
+  {
+    "propertyName": "数据连接功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "通话功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "网络制式",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "无线充电功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "无线功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "小型号",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "账号",
+    "category": "SKU项"
+  },
+  {
+    "propertyName": "折叠屏保护膜情况",
+    "category": "其他"
+  },
+  {
+    "propertyName": "振动功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "整机风险",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "指南针功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "指纹功能",
+    "category": "功能项"
+  },
+  {
+    "propertyName": "主板维修情况",
+    "category": "维修项"
+  },
+  {
+    "propertyName": "主屏幕外观",
+    "category": "外观项"
+  },
+  {
+    "propertyName": "转轴状况",
+    "category": "外观项"
+  }
+]

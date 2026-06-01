@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 type ImportedRow = {
   date: string;
@@ -49,6 +52,35 @@ type ImportRecord = {
   dataType: 'quality' | 'efficiency';
 };
 
+type PropertyCategoryEntry = {
+  propertyName: string;
+  category: string;
+};
+
+type AiAnalysisRequest = {
+  report?: string;
+  model?: string;
+  context?: {
+    qualityRows?: number;
+    efficiencyRows?: number;
+    dateRange?: string;
+    filters?: string;
+  };
+};
+
+const propertyCategoryOptions = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'];
+const normalizeDictionaryCategory = (value: string) => {
+  const normalizedValue = value.trim();
+  const legacyCategoryMap: Record<string, string> = {
+    主观项: '外观项',
+    零售附加项: '售后补充项',
+    零售补充项: '售后补充项',
+  };
+  const mappedValue = legacyCategoryMap[normalizedValue] ?? normalizedValue;
+
+  return propertyCategoryOptions.includes(mappedValue) ? mappedValue : '其他';
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
@@ -57,6 +89,8 @@ const dataDir = process.env.DATA_DIR
   : path.join(rootDir, 'data');
 const dataFile = path.join(dataDir, 'shared-dataset.json');
 const efficiencyDataFile = path.join(dataDir, 'efficiency-dataset.json');
+const propertyCategoryDictionaryFile = path.join(dataDir, 'property-category-dictionary.json');
+const propertyCategorySeedFile = path.join(rootDir, 'config', 'property-category-dictionary.seed.json');
 const distDir = path.join(rootDir, 'dist');
 
 const emptyDataset: SharedDataset = {
@@ -71,6 +105,16 @@ const emptyEfficiencyDataset: EfficiencyDataset = {
   importedAt: '',
   sourceName: '',
   importHistory: [],
+};
+
+const readSeedPropertyCategoryDictionary = async (): Promise<PropertyCategoryEntry[]> => {
+  try {
+    const content = await fs.readFile(propertyCategorySeedFile, 'utf8');
+    const parsed = JSON.parse(content) as PropertyCategoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 };
 
 const app = express();
@@ -160,6 +204,17 @@ const ensureEfficiencyDataFile = async () => {
   }
 };
 
+const ensurePropertyCategoryDictionaryFile = async () => {
+  await fs.mkdir(dataDir, { recursive: true });
+
+  try {
+    await fs.access(propertyCategoryDictionaryFile);
+  } catch {
+    const seed = await readSeedPropertyCategoryDictionary();
+    await fs.writeFile(propertyCategoryDictionaryFile, JSON.stringify(seed, null, 2), 'utf8');
+  }
+};
+
 const readDataset = async (): Promise<SharedDataset> => {
   await ensureDataFile();
   const content = await fs.readFile(dataFile, 'utf8');
@@ -198,6 +253,39 @@ const readEfficiencyDataset = async (): Promise<EfficiencyDataset> => {
 const writeEfficiencyDataset = async (dataset: EfficiencyDataset) => {
   await ensureEfficiencyDataFile();
   await fs.writeFile(efficiencyDataFile, JSON.stringify(dataset, null, 2), 'utf8');
+};
+
+const readPropertyCategoryDictionary = async (): Promise<PropertyCategoryEntry[]> => {
+  await ensurePropertyCategoryDictionaryFile();
+  const content = await fs.readFile(propertyCategoryDictionaryFile, 'utf8');
+
+  try {
+    const parsed = JSON.parse(content) as PropertyCategoryEntry[];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((entry) => ({
+        propertyName: String(entry.propertyName ?? '').trim(),
+        category: normalizeDictionaryCategory(String(entry.category ?? '')),
+      }))
+      .filter((entry) => entry.propertyName && entry.category);
+  } catch {
+    return [];
+  }
+};
+
+const writePropertyCategoryDictionary = async (entries: PropertyCategoryEntry[]) => {
+  await ensurePropertyCategoryDictionaryFile();
+  const normalizedEntries = entries
+    .map((entry) => ({
+      propertyName: String(entry.propertyName ?? '').trim(),
+      category: normalizeDictionaryCategory(String(entry.category ?? '')),
+    }))
+    .filter((entry) => entry.propertyName && entry.category);
+
+  await fs.writeFile(propertyCategoryDictionaryFile, JSON.stringify(normalizedEntries, null, 2), 'utf8');
 };
 
 const createImportRecord = (
@@ -281,6 +369,103 @@ app.delete('/api/efficiency-dataset', async (_req, res) => {
   res.json(emptyEfficiencyDataset);
 });
 
+app.get('/api/property-category-dictionary', async (_req, res) => {
+  const dictionary = await readPropertyCategoryDictionary();
+  res.json({ entries: dictionary });
+});
+
+app.put('/api/property-category-dictionary', async (req, res) => {
+  const body = req.body as { entries?: PropertyCategoryEntry[] };
+
+  if (!Array.isArray(body.entries)) {
+    return res.status(400).json({ message: 'entries is required' });
+  }
+
+  await writePropertyCategoryDictionary(body.entries);
+  const dictionary = await readPropertyCategoryDictionary();
+  res.json({ entries: dictionary });
+});
+
+app.post('/api/property-category-dictionary/reset', async (_req, res) => {
+  const seed = await readSeedPropertyCategoryDictionary();
+  await writePropertyCategoryDictionary(seed);
+  res.json({ entries: seed });
+});
+
+app.post('/api/ai-analysis', async (req, res) => {
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
+  const baseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com';
+
+  if (!apiKey) {
+    return res.status(503).json({
+      message: '服务端未配置 DEEPSEEK_API_KEY，当前只能使用规则版 AI 分析。',
+    });
+  }
+
+  const body = req.body as AiAnalysisRequest;
+  const report = body.report?.trim();
+  const requestedModel = body.model?.trim();
+  const model = requestedModel || process.env.DEEPSEEK_MODEL?.trim() || 'deepseek-chat';
+
+  if (!report) {
+    return res.status(400).json({ message: 'report is required' });
+  }
+
+  try {
+    const upstreamResponse = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '你是一名资深预质检质量运营分析师。',
+              '请基于用户提供的聚合看板结果做深入分析，不要编造未提供的数据。',
+              '输出中文，适合直接放入飞书周报。',
+              '请包含：1段总览、3-5条关键洞察、2-4条风险归因、3-5条下周动作建议。',
+              '分析重点：举证准确率、精准通过率、模棱两可率、拒绝率、场次/批次/属性项/人效之间的可能关系。',
+              '避免空泛话术，每条建议尽量说明优先级和落地方式。',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
+              body.context ? `补充上下文：${JSON.stringify(body.context)}` : '',
+              `规则版分析草稿如下：\n${report}`,
+            ].filter(Boolean).join('\n\n'),
+          },
+        ],
+      }),
+    });
+
+    const payload = await upstreamResponse.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+
+    if (!upstreamResponse.ok) {
+      return res.status(upstreamResponse.status).json({
+        message: payload.error?.message || 'DeepSeek 分析生成失败',
+      });
+    }
+
+    res.json({
+      model,
+      analysis: payload.choices?.[0]?.message?.content?.trim() || 'DeepSeek 已响应，但未返回可展示文本。',
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '大模型分析生成失败';
+    res.status(500).json({ message });
+  }
+});
+
 if (fsSync.existsSync(distDir)) {
   app.use(express.static(distDir));
 
@@ -297,5 +482,6 @@ if (fsSync.existsSync(distDir)) {
 app.listen(port, async () => {
   await ensureDataFile();
   await ensureEfficiencyDataFile();
+  await ensurePropertyCategoryDictionaryFile();
   console.log(`Shared dataset API running on http://127.0.0.1:${port}`);
 });

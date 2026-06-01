@@ -49,6 +49,21 @@ export interface ImportRecord {
   dataType: 'quality' | 'efficiency';
 }
 
+export interface PropertyCategoryEntry {
+  propertyName: string;
+  category: string;
+}
+
+export interface PropertyCategoryDictionaryResponse {
+  entries: PropertyCategoryEntry[];
+}
+
+export interface AiAnalysisResponse {
+  model: string;
+  analysis: string;
+  generatedAt: string;
+}
+
 export interface MetricsCardData {
   title: string;
   value: string;

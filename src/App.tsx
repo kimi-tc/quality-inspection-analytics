@@ -50,9 +50,12 @@ import {
   EfficiencyRow,
   ImportRecord,
   ImportedRow,
+  AiAnalysisResponse,
   MetricsCardData,
   ParsedEfficiencyWorkbook,
   ParsedWorkbook,
+  PropertyCategoryDictionaryResponse,
+  PropertyCategoryEntry,
   SharedDatasetResponse,
 } from './types';
 
@@ -60,7 +63,6 @@ const REQUIRED_HEADERS = [
   '第一次线审完成时间',
   '场次',
   '批次',
-  '属性项分类',
   '属性标签',
   '申报次数',
   '模糊通过次数',
@@ -80,7 +82,47 @@ const REQUIRED_EFFICIENCY_HEADERS = [
 ] as const;
 
 const ALL_OPTION = '全部';
-type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import';
+type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
+const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
+const DEEPSEEK_MODEL_OPTIONS = [
+  'deepseek-chat',
+  'deepseek-reasoner',
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+] as const;
+const CUSTOM_MODEL_OPTION = '自定义模型';
+
+const normalizePropertyName = (value: string) => value.trim().replace(/与购买时不一致$/, '');
+
+const normalizeDictionaryCategory = (value: string) => {
+  const normalizedValue = value.trim();
+  const legacyCategoryMap: Record<string, string> = {
+    主观项: '外观项',
+    零售附加项: '售后补充项',
+    零售补充项: '售后补充项',
+  };
+  const mappedValue = legacyCategoryMap[normalizedValue] ?? normalizedValue;
+
+  return PROPERTY_CATEGORY_OPTIONS.includes(mappedValue as (typeof PROPERTY_CATEGORY_OPTIONS)[number])
+    ? mappedValue
+    : '其他';
+};
+
+const buildDictionaryMap = (entries: PropertyCategoryEntry[]) =>
+  new Map(entries.map((entry) => [normalizePropertyName(entry.propertyName), normalizeDictionaryCategory(entry.category)]));
+
+const resolveCategory = (category: string, attribute: string, dictionary: PropertyCategoryEntry[]) => {
+  const normalizedAttribute = attribute.trim();
+  const normalizedCategory = category.trim();
+
+  if (normalizedAttribute.includes('售后补充项') || normalizedCategory.includes('售后补充项')) {
+    return '售后补充项';
+  }
+
+  const dictionaryCategory = buildDictionaryMap(dictionary).get(normalizePropertyName(normalizedAttribute));
+
+  return dictionaryCategory ?? normalizeDictionaryCategory(normalizedCategory || '其他');
+};
 
 const emptyWorkbook: ParsedWorkbook = {
   rows: [],
@@ -171,7 +213,10 @@ const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
   return null;
 };
 
-const parseWorkbookFile = async (file: File): Promise<ParsedWorkbook> => {
+const parseWorkbookFile = async (
+  file: File,
+  propertyCategoryDictionary: PropertyCategoryEntry[],
+): Promise<ParsedWorkbook> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
   const matched = pickDataSheet(workbook);
@@ -185,7 +230,11 @@ const parseWorkbookFile = async (file: File): Promise<ParsedWorkbook> => {
       date: normalizeDate(record['第一次线审完成时间']),
       session: String(record['场次'] ?? '').trim(),
       batch: String(record['批次'] ?? '').trim(),
-      category: String(record['属性项分类'] ?? '').trim(),
+      category: resolveCategory(
+        String(record['属性项分类'] ?? ''),
+        String(record['属性标签'] ?? ''),
+        propertyCategoryDictionary,
+      ),
       attribute: String(record['属性标签'] ?? '').trim(),
       declarations: toNumber(record['申报次数']),
       ambiguousPasses: toNumber(record['模糊通过次数']),
@@ -235,6 +284,37 @@ const parseEfficiencyWorkbookFile = async (file: File): Promise<ParsedEfficiency
     importedAt: new Date().toISOString(),
     sourceName: file.name,
   };
+};
+
+const parsePropertyCategoryDictionaryFile = async (file: File): Promise<PropertyCategoryEntry[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: '',
+      raw: false,
+    });
+
+    if (!json.length) {
+      continue;
+    }
+
+    const headerSet = new Set(Object.keys(json[0]));
+    if (!headerSet.has('属性项') || !headerSet.has('属性项分类')) {
+      continue;
+    }
+
+    return json
+      .map((record) => ({
+        propertyName: String(record['属性项'] ?? '').trim(),
+        category: normalizeDictionaryCategory(String(record['属性项分类'] ?? '')),
+      }))
+      .filter((entry) => entry.propertyName && entry.category);
+  }
+
+  throw new Error('未找到分类字典字段，请确认表头包含：属性项、属性项分类。');
 };
 
 const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
@@ -388,15 +468,15 @@ const aggregateAttributes = (rows: ImportedRow[]) =>
     .sort((a, b) => b.declarations - a.declarations)
     .slice(0, 10);
 
-const aggregateCategories = (rows: ImportedRow[]) =>
+const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: PropertyCategoryEntry[]) =>
   Object.values(
     rows.reduce<Record<string, { name: string; value: number }>>((acc, row) => {
-      const key = row.category || '未分类';
+      const key = resolveCategory(row.category, row.attribute, propertyCategoryDictionary) || '未分类';
       if (!acc[key]) {
         acc[key] = { name: key, value: 0 };
       }
 
-      acc[key].value += row.declarations;
+      acc[key].value += Math.max(row.declarations, row.ambiguousPasses, row.rejects, row.proofRejects);
       return acc;
     }, {}),
   )
@@ -673,11 +753,18 @@ const aggregateEfficiencyTrend = (rows: EfficiencyRow[]) =>
     }, {}),
   ).sort((a, b) => a.date.localeCompare(b.date));
 
-const aggregateQualityDimension = (rows: ImportedRow[], key: 'session' | 'batch' | 'category' | 'attribute') =>
+const aggregateQualityDimension = (
+  rows: ImportedRow[],
+  key: 'session' | 'batch' | 'category' | 'attribute',
+  propertyCategoryDictionary: PropertyCategoryEntry[] = [],
+) =>
   Object.values(
     rows.reduce<Record<string, { name: string; declarations: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
       (acc, row) => {
-        const name = String(row[key] || '未分类');
+        const name =
+          key === 'category'
+            ? resolveCategory(row.category, row.attribute, propertyCategoryDictionary)
+            : String(row[key] || '未分类');
         if (!acc[name]) {
           acc[name] = { name, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
         }
@@ -726,6 +813,46 @@ const splitTrendMetrics = (rows: ImportedRow[]) => {
   };
 };
 
+const calculateHealthScore = (
+  qualityMetrics: ReturnType<typeof aggregateMetrics>,
+  trendSplit: ReturnType<typeof splitTrendMetrics>,
+) => {
+  if (!qualityMetrics.declarations) {
+    return {
+      score: 0,
+      level: '暂无数据',
+      factors: ['当前筛选范围内没有申报数据，暂不计算健康度。'],
+    };
+  }
+
+  const proofRejectRate = qualityMetrics.declarations
+    ? qualityMetrics.proofRejects / qualityMetrics.declarations
+    : 0;
+  const exactMissRate = 1 - qualityMetrics.exactPassRate;
+  const trendPenalty = Math.max(0, -trendSplit.proofAccuracyDelta) * 100;
+  const samplePenalty = qualityMetrics.declarations < 100 ? 6 : qualityMetrics.declarations < 500 ? 3 : 0;
+  const ambiguousPenalty = qualityMetrics.ambiguousRate * 55;
+  const rejectPenalty = qualityMetrics.rejectRate * 45;
+  const proofRejectPenalty = proofRejectRate * 35;
+  const exactMissPenalty = exactMissRate * 12;
+  const totalPenalty =
+    ambiguousPenalty + rejectPenalty + proofRejectPenalty + exactMissPenalty + trendPenalty + samplePenalty;
+  const score = Math.max(0, Math.min(100, Math.round(100 - totalPenalty)));
+  const level = score >= 85 ? '健康' : score >= 70 ? '需关注' : score >= 55 ? '偏弱' : '高风险';
+  const factors = [
+    `模棱两可率扣分 ${ambiguousPenalty.toFixed(1)}：当前 ${formatPercent(qualityMetrics.ambiguousRate)}。`,
+    `拒绝率扣分 ${rejectPenalty.toFixed(1)}：当前 ${formatPercent(qualityMetrics.rejectRate)}。`,
+    `举证未通过扣分 ${proofRejectPenalty.toFixed(1)}：当前 ${formatPercent(proofRejectRate)}。`,
+    `精准未通过扣分 ${exactMissPenalty.toFixed(1)}：精准通过率 ${formatPercent(qualityMetrics.exactPassRate)}。`,
+    trendPenalty
+      ? `趋势扣分 ${trendPenalty.toFixed(1)}：后半段举证准确率较前半段下降 ${formatPercent(-trendSplit.proofAccuracyDelta)}。`
+      : '趋势扣分 0.0：后半段举证准确率未低于前半段。',
+    samplePenalty ? `样本扣分 ${samplePenalty.toFixed(1)}：当前申报样本量偏小。` : '样本扣分 0.0：当前样本量充足。',
+  ];
+
+  return { score, level, factors };
+};
+
 const createAiAnalysis = ({
   qualityMetrics,
   qualityRows,
@@ -733,6 +860,7 @@ const createAiAnalysis = ({
   categoryData,
   efficiencyMetrics,
   efficiencyRanking,
+  propertyCategoryDictionary,
 }: {
   qualityMetrics: ReturnType<typeof aggregateMetrics>;
   qualityRows: ImportedRow[];
@@ -740,6 +868,7 @@ const createAiAnalysis = ({
   categoryData: ReturnType<typeof aggregateCategories>;
   efficiencyMetrics: ReturnType<typeof aggregateEfficiency>;
   efficiencyRanking: ReturnType<typeof aggregateEfficiencyRanking>;
+  propertyCategoryDictionary: PropertyCategoryEntry[];
 }) => {
   const topAttribute = topAttributes[0];
   const topCategory = categoryData[0];
@@ -748,7 +877,7 @@ const createAiAnalysis = ({
   const hasEfficiencyData = efficiencyMetrics.handledCount > 0;
   const sessionDrivers = aggregateQualityDimension(qualityRows, 'session');
   const batchDrivers = aggregateQualityDimension(qualityRows, 'batch');
-  const categoryDrivers = aggregateQualityDimension(qualityRows, 'category');
+  const categoryDrivers = aggregateQualityDimension(qualityRows, 'category', propertyCategoryDictionary);
   const attributeDrivers = aggregateQualityDimension(qualityRows, 'attribute');
   const weakSessions = sessionDrivers
     .filter((item) => item.declarations >= 20)
@@ -767,19 +896,9 @@ const createAiAnalysis = ({
     .sort((a, b) => b.metrics.ambiguousRate - a.metrics.ambiguousRate)
     .slice(0, 3);
   const trendSplit = splitTrendMetrics(qualityRows);
-  const healthScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        qualityMetrics.proofAccuracy * 55 +
-          qualityMetrics.exactPassRate * 30 +
-          (1 - qualityMetrics.ambiguousRate) * 8 +
-          (1 - qualityMetrics.rejectRate) * 7,
-      ),
-    ),
-  );
-  const healthLevel = healthScore >= 85 ? '健康' : healthScore >= 70 ? '需关注' : '高风险';
+  const health = calculateHealthScore(qualityMetrics, trendSplit);
+  const healthScore = health.score;
+  const healthLevel = health.level;
   const qualityDateRange = qualityRows.length
     ? `${qualityRows[0].date} ~ ${qualityRows[qualityRows.length - 1].date}`
     : '暂无质量数据';
@@ -863,14 +982,17 @@ const createAiAnalysis = ({
     '二、关键驱动',
     ...drivers.map((item, index) => `${index + 1}. ${item}`),
     '',
-    '三、风险提醒',
+    '三、健康度扣分拆解',
+    ...health.factors.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    '四、风险提醒',
     ...risks.map((item, index) => `${index + 1}. ${item}`),
     '',
-    '四、建议动作',
+    '五、建议动作',
     ...actions.map((item, index) => `${index + 1}. ${item}`),
   ].join('\n');
 
-  return { summary, risks, actions, drivers, report, healthScore, healthLevel };
+  return { summary, risks, actions, drivers, report, healthScore, healthLevel, healthFactors: health.factors };
 };
 
 const downloadTemplate = () => {
@@ -879,7 +1001,6 @@ const downloadTemplate = () => {
       第一次线审完成时间: '2026-05-23',
       场次: '京东寄卖',
       批次: '第4批',
-      属性项分类: '主观项',
       属性标签: '屏幕外观',
       申报次数: 2,
       模糊通过次数: 0,
@@ -974,9 +1095,68 @@ const clearEfficiencyDataset = async (): Promise<EfficiencyDatasetResponse> => {
   return response.json();
 };
 
+const fetchPropertyCategoryDictionary = async (): Promise<PropertyCategoryDictionaryResponse> => {
+  const response = await fetch('/api/property-category-dictionary');
+  if (!response.ok) {
+    throw new Error('读取分类字典失败');
+  }
+  return response.json();
+};
+
+const savePropertyCategoryDictionary = async (
+  entries: PropertyCategoryEntry[],
+): Promise<PropertyCategoryDictionaryResponse> => {
+  const response = await fetch('/api/property-category-dictionary', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entries }),
+  });
+
+  if (!response.ok) {
+    throw new Error('保存分类字典失败');
+  }
+
+  return response.json();
+};
+
+const resetPropertyCategoryDictionary = async (): Promise<PropertyCategoryDictionaryResponse> => {
+  const response = await fetch('/api/property-category-dictionary/reset', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error('重置分类字典失败');
+  }
+  return response.json();
+};
+
+const generateModelAnalysis = async (payload: {
+  report: string;
+  model: string;
+  context: {
+    qualityRows: number;
+    efficiencyRows: number;
+    dateRange: string;
+    filters: string;
+  };
+}): Promise<AiAnalysisResponse> => {
+  const response = await fetch('/api/ai-analysis', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json();
+
+  if (!response.ok) {
+    throw new Error(body.message || '大模型分析生成失败');
+  }
+
+  return body;
+};
+
 function App() {
   const [dataset, setDataset] = useState<ParsedWorkbook>(emptyWorkbook);
   const [efficiencyDataset, setEfficiencyDataset] = useState<ParsedEfficiencyWorkbook>(emptyEfficiencyWorkbook);
+  const [propertyCategoryDictionary, setPropertyCategoryDictionary] = useState<PropertyCategoryEntry[]>([]);
+  const [dictionaryDraft, setDictionaryDraft] = useState<PropertyCategoryEntry>({ propertyName: '', category: '' });
+  const [editingDictionaryKey, setEditingDictionaryKey] = useState('');
   const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [startDateFilter, setStartDateFilter] = useState(ALL_OPTION);
   const [endDateFilter, setEndDateFilter] = useState(ALL_OPTION);
@@ -993,10 +1173,25 @@ function App() {
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [isEfficiencyImporting, setIsEfficiencyImporting] = useState(false);
+  const [isDictionarySaving, setIsDictionarySaving] = useState(false);
+  const [isModelAnalyzing, setIsModelAnalyzing] = useState(false);
+  const [modelAnalysis, setModelAnalysis] = useState<AiAnalysisResponse | null>(null);
+  const [modelAnalysisError, setModelAnalysisError] = useState('');
+  const [selectedDeepseekModel, setSelectedDeepseekModel] = useState('deepseek-v4-flash');
+  const [customDeepseekModel, setCustomDeepseekModel] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const loadDataset = async () => {
+      try {
+        const dictionary = await fetchPropertyCategoryDictionary();
+        if (Array.isArray(dictionary.entries)) {
+          setPropertyCategoryDictionary(dictionary.entries);
+        }
+      } catch {
+        setPropertyCategoryDictionary([]);
+      }
+
       try {
         const sharedDataset = await fetchSharedDataset();
         if (Array.isArray(sharedDataset.rows)) {
@@ -1047,7 +1242,10 @@ function App() {
   const metrics = useMemo(() => aggregateMetrics(filteredRows), [filteredRows]);
   const trendData = useMemo(() => aggregateTrend(filteredRows), [filteredRows]);
   const topAttributes = useMemo(() => aggregateAttributes(filteredRows), [filteredRows]);
-  const categoryData = useMemo(() => aggregateCategories(filteredRows), [filteredRows]);
+  const categoryData = useMemo(
+    () => aggregateCategories(filteredRows, propertyCategoryDictionary),
+    [filteredRows, propertyCategoryDictionary],
+  );
   const compareLeftRows = useMemo(
     () =>
       filterRowsByCriteria(dataset.rows, {
@@ -1176,9 +1374,31 @@ function App() {
         categoryData,
         efficiencyMetrics,
         efficiencyRanking,
+        propertyCategoryDictionary,
       }),
-    [categoryData, efficiencyMetrics, efficiencyRanking, filteredRows, metrics, topAttributes],
+    [categoryData, efficiencyMetrics, efficiencyRanking, filteredRows, metrics, propertyCategoryDictionary, topAttributes],
   );
+  const aiContext = useMemo(
+    () => ({
+      qualityRows: filteredRows.length,
+      efficiencyRows: efficiencyDataset.rows.length,
+      dateRange:
+        filteredRows.length > 0
+          ? `${filteredRows[0].date} ~ ${filteredRows[filteredRows.length - 1].date}`
+          : '暂无质量数据',
+      filters: [
+        `日期=${formatDateDisplay(startDateFilter) || '全部'}~${formatDateDisplay(endDateFilter) || '全部'}`,
+        `场次=${sessionFilter}`,
+        `批次=${batchFilter}`,
+        `属性项=${attributeFilter}`,
+      ].join('；'),
+    }),
+    [attributeFilter, batchFilter, efficiencyDataset.rows.length, endDateFilter, filteredRows, sessionFilter, startDateFilter],
+  );
+  const activeDeepseekModel =
+    selectedDeepseekModel === CUSTOM_MODEL_OPTION
+      ? customDeepseekModel.trim()
+      : selectedDeepseekModel;
 
   const cards: MetricsCardData[] = [
     {
@@ -1228,7 +1448,7 @@ function App() {
     setError('');
 
     try {
-      const parsed = await parseWorkbookFile(file);
+      const parsed = await parseWorkbookFile(file, propertyCategoryDictionary);
       const nextDataset = await mergeSharedDataset(parsed);
       setDataset(nextDataset);
       setStartDateFilter(ALL_OPTION);
@@ -1296,6 +1516,111 @@ function App() {
       setEfficiencyDataset(nextDataset);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空人效数据失败。');
+    }
+  };
+
+  const runModelAnalysis = async () => {
+    if (!activeDeepseekModel) {
+      setModelAnalysisError('请先选择或填写 DeepSeek 模型名称。');
+      return;
+    }
+
+    setIsModelAnalyzing(true);
+    setModelAnalysisError('');
+
+    try {
+      const response = await generateModelAnalysis({
+        report: aiAnalysis.report,
+        model: activeDeepseekModel,
+        context: aiContext,
+      });
+      setModelAnalysis(response);
+    } catch (err) {
+      setModelAnalysisError(err instanceof Error ? err.message : '大模型分析生成失败。');
+    } finally {
+      setIsModelAnalyzing(false);
+    }
+  };
+
+  const persistPropertyCategoryDictionary = async (entries: PropertyCategoryEntry[]) => {
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const response = await savePropertyCategoryDictionary(entries);
+      setPropertyCategoryDictionary(response.entries);
+      setDictionaryDraft({ propertyName: '', category: '' });
+      setEditingDictionaryKey('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存分类字典失败。');
+    } finally {
+      setIsDictionarySaving(false);
+    }
+  };
+
+  const upsertDictionaryEntry = async () => {
+    const propertyName = dictionaryDraft.propertyName.trim();
+    const category = normalizeDictionaryCategory(dictionaryDraft.category);
+
+    if (!propertyName || !category) {
+      setError('请填写属性项和属性项分类。');
+      return;
+    }
+
+    const nextEntries = propertyCategoryDictionary.filter(
+      (entry) => normalizePropertyName(entry.propertyName) !== normalizePropertyName(editingDictionaryKey || propertyName),
+    );
+
+    await persistPropertyCategoryDictionary([...nextEntries, { propertyName, category }]);
+  };
+
+  const editDictionaryEntry = (entry: PropertyCategoryEntry) => {
+    setDictionaryDraft(entry);
+    setEditingDictionaryKey(entry.propertyName);
+    setActiveView('dictionary');
+  };
+
+  const deleteDictionaryEntry = async (propertyName: string) => {
+    await persistPropertyCategoryDictionary(
+      propertyCategoryDictionary.filter(
+        (entry) => normalizePropertyName(entry.propertyName) !== normalizePropertyName(propertyName),
+      ),
+    );
+  };
+
+  const handleDictionaryImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const entries = await parsePropertyCategoryDictionaryFile(file);
+      await persistPropertyCategoryDictionary(entries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导入分类字典失败，请检查文件格式。');
+    } finally {
+      setIsDictionarySaving(false);
+      event.target.value = '';
+    }
+  };
+
+  const resetDictionary = async () => {
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const response = await resetPropertyCategoryDictionary();
+      setPropertyCategoryDictionary(response.entries);
+      setDictionaryDraft({ propertyName: '', category: '' });
+      setEditingDictionaryKey('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重置分类字典失败。');
+    } finally {
+      setIsDictionarySaving(false);
     }
   };
 
@@ -1429,6 +1754,12 @@ function App() {
                 active={activeView === 'import'}
                 onClick={() => setActiveView('import')}
               />
+              <SidebarNavItem
+                icon={<Tags size={20} />}
+                label="分类字典"
+                active={activeView === 'dictionary'}
+                onClick={() => setActiveView('dictionary')}
+              />
             </div>
           </div>
         </aside>
@@ -1441,6 +1772,7 @@ function App() {
             <MobileNavChip label="人效分析" active={activeView === 'efficiency'} onClick={() => setActiveView('efficiency')} />
             <MobileNavChip label="AI 分析" active={activeView === 'ai'} onClick={() => setActiveView('ai')} />
             <MobileNavChip label="数据导入" active={activeView === 'import'} onClick={() => setActiveView('import')} />
+            <MobileNavChip label="分类字典" active={activeView === 'dictionary'} onClick={() => setActiveView('dictionary')} />
           </div>
 
           <motion.section
@@ -1519,7 +1851,7 @@ function App() {
                       }}
                     />
                   </div>
-                ) : activeView === 'efficiency' || activeView === 'ai' || activeView === 'import' ? (
+                ) : activeView === 'efficiency' || activeView === 'ai' || activeView === 'import' || activeView === 'dictionary' ? (
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-slate-200">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -1528,14 +1860,18 @@ function App() {
                             ? '人效数据独立分析区'
                             : activeView === 'ai'
                               ? 'AI 分析准备区'
-                              : '数据导入与记录区'}
+                              : activeView === 'import'
+                                ? '数据导入与记录区'
+                                : '属性项分类字典管理区'}
                         </p>
                         <p className="mt-1 text-xs leading-6 text-slate-300">
                           {activeView === 'efficiency'
                             ? '人效底表与质量底表分开导入、分开存储，当前版本先提供基础产能、时长与超时概览。'
                             : activeView === 'ai'
                               ? 'AI 分析将读取质量数据与人效数据，先沉淀规则化洞察，后续可接入大模型生成周报。'
-                              : '质量周数据和人效周数据在这里统一导入，并保留每次导入记录。'}
+                              : activeView === 'import'
+                                ? '质量周数据和人效周数据在这里统一导入，并保留每次导入记录。'
+                                : '底表可不再提供分类，看板会优先依据本地字典为属性项自动归类。'}
                         </p>
                       </div>
                       <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-200">
@@ -1543,7 +1879,9 @@ function App() {
                           ? `${formatInteger(efficiencyDataset.rows.length)} 条人效记录`
                           : activeView === 'ai'
                             ? `${formatInteger(dataset.rows.length)} 条质量 / ${formatInteger(efficiencyDataset.rows.length)} 条人效`
-                            : `${formatInteger(allImportHistory.length)} 条导入记录`}
+                            : activeView === 'import'
+                              ? `${formatInteger(allImportHistory.length)} 条导入记录`
+                              : `${formatInteger(propertyCategoryDictionary.length)} 条字典`}
                       </span>
                     </div>
                   </div>
@@ -2246,6 +2584,151 @@ function App() {
                 </div>
               </section>
             </>
+          ) : activeView === 'dictionary' ? (
+            <>
+              <section className="mt-8 grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Dictionary Form</p>
+                  <h2 className="mt-2 font-display text-2xl text-slate-900">
+                    {editingDictionaryKey ? '修改分类规则' : '新增分类规则'}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    字典字段以你的模板为准：属性项、属性项分类。底表分类会优先被这里的字典覆盖。
+                  </p>
+
+                  <div className="mt-6 grid gap-4">
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">属性项</span>
+                      <input
+                        value={dictionaryDraft.propertyName}
+                        onChange={(event) =>
+                          setDictionaryDraft((current) => ({ ...current, propertyName: event.target.value }))
+                        }
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                        placeholder="例如：屏幕外观"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">属性项分类</span>
+                      <select
+                        value={dictionaryDraft.category}
+                        onChange={(event) =>
+                          setDictionaryDraft((current) => ({ ...current, category: event.target.value }))
+                        }
+                        className="dashboard-select w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                      >
+                        <option value="">请选择分类</option>
+                        {PROPERTY_CATEGORY_OPTIONS.map((category) => (
+                          <option key={category} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="mt-6 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void upsertDictionaryEntry()}
+                      disabled={isDictionarySaving}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Tags size={16} />
+                      {isDictionarySaving ? '保存中...' : editingDictionaryKey ? '保存修改' : '新增规则'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDictionaryDraft({ propertyName: '', category: '' });
+                        setEditingDictionaryKey('');
+                      }}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      取消编辑
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Dictionary Actions</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">字典导入与维护</h2>
+                      <p className="mt-2 text-sm text-slate-500">当前共有 {formatInteger(propertyCategoryDictionary.length)} 条分类规则。</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-700 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-800">
+                        <Upload size={16} />
+                        导入字典 Excel
+                        <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleDictionaryImport} />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => void resetDictionary()}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700 transition hover:bg-amber-100"
+                      >
+                        恢复模板
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-700">
+                    新导入质量底表时会按字典写入分类；历史数据展示时也会按最新字典重新归类，所以修改字典后首页分类分布会立即变化。
+                  </div>
+                </div>
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Dictionary Table</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">分类字典明细</h2>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+                    {formatInteger(propertyCategoryDictionary.length)} 条
+                  </span>
+                </div>
+
+                <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-100">
+                  <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                    <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-[0.18em] text-slate-400">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">属性项</th>
+                        <th className="px-4 py-3 font-medium">属性项分类</th>
+                        <th className="px-4 py-3 text-right font-medium">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {propertyCategoryDictionary.map((entry) => (
+                        <tr key={`${entry.propertyName}-${entry.category}`} className="bg-white">
+                          <td className="px-4 py-3 font-medium text-slate-800">{entry.propertyName}</td>
+                          <td className="px-4 py-3 text-slate-600">{entry.category}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => editDictionaryEntry(entry)}
+                                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-200"
+                              >
+                                修改
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void deleteDictionaryEntry(entry.propertyName)}
+                                className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-100"
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
           ) : (
             <>
               <section className="mt-8 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
@@ -2253,7 +2736,7 @@ function App() {
                   <p className="text-sm uppercase tracking-[0.26em] text-slate-400">AI Analysis</p>
                   <h2 className="mt-2 font-display text-2xl text-slate-900">AI 分析已生成</h2>
                   <p className="mt-3 text-sm leading-7 text-slate-500">
-                    当前为规则版 AI 分析，不依赖外部模型密钥；会读取当前筛选后的质量数据和已导入的人效数据生成结论。
+                    默认先生成规则版分析；服务端配置 DeepSeek Key 后，可在右侧一键生成更深入的周报归因。
                   </p>
                   <div className="mt-6 rounded-3xl bg-[linear-gradient(135deg,_#0f172a_0%,_#1e3a5f_100%)] p-5 text-white">
                     <p className="text-sm text-slate-300">质量健康评分</p>
@@ -2296,11 +2779,124 @@ function App() {
                 </div>
               </section>
 
+              <section className="mt-8 rounded-[28px] border border-cyan-100 bg-[linear-gradient(135deg,_#f8fdff_0%,_#ffffff_55%,_#eef8ff_100%)] p-6 shadow-[0_18px_45px_rgba(14,116,144,0.08)]">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-cyan-500">DeepSeek Analysis</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">大模型深度分析</h2>
+                    <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+                      仅发送当前筛选后的聚合报告和基础上下文，不上传原始明细。适合生成更像“人写的”飞书周报、归因和下周动作。
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-3 sm:min-w-[320px]">
+                    <label className="text-xs uppercase tracking-[0.2em] text-slate-400">模型选择</label>
+                    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                      <select
+                        value={selectedDeepseekModel}
+                        onChange={(event) => {
+                          setSelectedDeepseekModel(event.target.value);
+                          setModelAnalysisError('');
+                        }}
+                        className="dashboard-select h-12 rounded-2xl border border-cyan-100 bg-white px-4 text-sm font-medium text-slate-700 outline-none transition focus:border-cyan-300 focus:ring-4 focus:ring-cyan-100"
+                      >
+                        {DEEPSEEK_MODEL_OPTIONS.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                        <option value={CUSTOM_MODEL_OPTION}>{CUSTOM_MODEL_OPTION}</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void runModelAnalysis()}
+                        disabled={isModelAnalyzing || !activeDeepseekModel}
+                        className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-cyan-500 px-4 text-sm font-medium text-white shadow-[0_12px_28px_rgba(6,182,212,0.24)] transition hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                      >
+                        <BrainCircuit size={16} />
+                        {isModelAnalyzing ? '分析中...' : '调用分析'}
+                      </button>
+                    </div>
+                    {selectedDeepseekModel === CUSTOM_MODEL_OPTION ? (
+                      <input
+                        value={customDeepseekModel}
+                        onChange={(event) => {
+                          setCustomDeepseekModel(event.target.value);
+                          setModelAnalysisError('');
+                        }}
+                        placeholder="输入模型名，例如 deepseek-v4-flash"
+                        className="h-12 rounded-2xl border border-cyan-100 bg-white px-4 text-sm font-medium text-slate-700 outline-none transition placeholder:text-slate-300 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-100"
+                      />
+                    ) : null}
+                    <p className="text-xs text-slate-400">本次将使用：{activeDeepseekModel || '未选择'}</p>
+                  </div>
+                </div>
+                {modelAnalysisError ? (
+                  <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700">
+                    {modelAnalysisError}
+                  </div>
+                ) : null}
+                {modelAnalysis ? (
+                  <div className="mt-5">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.22em] text-cyan-500">Generated Result</p>
+                        <h3 className="mt-1 font-display text-xl text-slate-900">
+                          DeepSeek 深度分析 · {modelAnalysis.model}
+                        </h3>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1.5 text-xs text-slate-500 shadow-sm">
+                        生成时间：{formatDateTime(modelAnalysis.generatedAt)}
+                      </span>
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void navigator.clipboard?.writeText(
+                            [
+                              `模型：${modelAnalysis.model}`,
+                              `生成时间：${formatDateTime(modelAnalysis.generatedAt)}`,
+                              '',
+                              modelAnalysis.analysis,
+                            ].join('\n'),
+                          )
+                        }
+                        className="mb-3 inline-flex items-center gap-2 rounded-2xl border border-cyan-100 bg-white px-4 py-2 text-sm font-medium text-cyan-700 transition hover:bg-cyan-50"
+                      >
+                        <ClipboardList size={16} />
+                        复制深度分析
+                      </button>
+                    </div>
+                    <pre className="max-h-[460px] overflow-auto whitespace-pre-wrap rounded-2xl border border-cyan-100 bg-white/80 p-4 text-sm leading-7 text-slate-700">
+                      {modelAnalysis.analysis}
+                    </pre>
+                  </div>
+                ) : (
+                  <div className="mt-5 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-slate-600">输入：规则版 AI 草稿</div>
+                    <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-slate-600">范围：{aiContext.dateRange}</div>
+                    <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-slate-600">过滤：{aiContext.filters}</div>
+                  </div>
+                )}
+              </section>
+
               <section className="mt-8 grid gap-6 xl:grid-cols-4">
                 <AiInsightColumn title="核心结论" items={aiAnalysis.summary} tone="blue" />
                 <AiInsightColumn title="关键驱动" items={aiAnalysis.drivers} tone="slate" />
                 <AiInsightColumn title="风险提醒" items={aiAnalysis.risks} tone="amber" />
                 <AiInsightColumn title="建议动作" items={aiAnalysis.actions} tone="emerald" />
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Score Breakdown</p>
+                <h2 className="mt-2 font-display text-2xl text-slate-900">健康度扣分明细</h2>
+                <div className="mt-5 grid gap-3 md:grid-cols-2">
+                  {aiAnalysis.healthFactors.map((factor) => (
+                    <div key={factor} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
+                      {factor}
+                    </div>
+                  ))}
+                </div>
               </section>
             </>
           )}
@@ -2507,14 +3103,14 @@ function FilterSelect({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className={`w-full rounded-2xl px-4 py-2.5 text-sm outline-none transition ${
+        className={`dashboard-select w-full rounded-2xl px-4 py-2.5 text-sm outline-none transition ${
           tone === 'dark'
             ? 'border border-white/10 bg-white/8 text-white focus:border-white/40'
             : 'border border-slate-200 bg-white text-slate-900 focus:border-slate-400'
         }`}
       >
         {options.map((option) => (
-          <option key={option} value={option} className="text-slate-900">
+          <option key={option} value={option}>
             {option}
           </option>
         ))}
@@ -2556,13 +3152,13 @@ function WeekQuickSelect({
             onChange(selectedWeek);
           }
         }}
-        className="w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
+        className="dashboard-select w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
       >
-        <option value={ALL_OPTION} className="text-slate-900">
+        <option value={ALL_OPTION}>
           全部周
         </option>
         {options.map((week) => (
-          <option key={week.value} value={week.value} className="text-slate-900">
+          <option key={week.value} value={week.value}>
             {week.label}
           </option>
         ))}

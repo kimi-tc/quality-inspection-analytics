@@ -16,6 +16,23 @@
 }
 
 @layer components {
+  .dashboard-select {
+    color-scheme: light;
+    color: #0f172a;
+    background-color: #ffffff;
+  }
+
+  .dashboard-select option {
+    color: #0f172a;
+    background-color: #ffffff;
+  }
+
+  .dashboard-select option:checked,
+  .dashboard-select option:hover {
+    color: #0f172a;
+    background-color: #e0f2fe;
+  }
+
   .date-range-picker {
     --rdp-accent-color: #2f7cff;
     --rdp-range_middle-background-color: #dbeafe;
