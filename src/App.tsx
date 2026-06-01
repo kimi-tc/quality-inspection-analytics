@@ -37,12 +37,24 @@ import {
   ChevronRight,
   House,
   GitCompareArrows,
+  Users,
+  BrainCircuit,
+  ClipboardList,
   ArrowUpRight,
   ArrowDownRight,
   Minus,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { ImportedRow, MetricsCardData, ParsedWorkbook, SharedDatasetResponse } from './types';
+import {
+  EfficiencyDatasetResponse,
+  EfficiencyRow,
+  ImportRecord,
+  ImportedRow,
+  MetricsCardData,
+  ParsedEfficiencyWorkbook,
+  ParsedWorkbook,
+  SharedDatasetResponse,
+} from './types';
 
 const REQUIRED_HEADERS = [
   '第一次线审完成时间',
@@ -56,9 +68,27 @@ const REQUIRED_HEADERS = [
   '举证未通过次数',
 ] as const;
 
+const REQUIRED_EFFICIENCY_HEADERS = [
+  '日期',
+  '员工姓名',
+  '团队',
+  '场次',
+  '批次',
+  '处理单量',
+  '平均处理时长',
+  '超时次数',
+] as const;
+
 const ALL_OPTION = '全部';
+type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import';
 
 const emptyWorkbook: ParsedWorkbook = {
+  rows: [],
+  importedAt: '',
+  sourceName: '',
+};
+
+const emptyEfficiencyWorkbook: ParsedEfficiencyWorkbook = {
   rows: [],
   importedAt: '',
   sourceName: '',
@@ -118,6 +148,29 @@ const pickDataSheet = (workbook: XLSX.WorkBook) => {
   return null;
 };
 
+const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: '',
+      raw: false,
+    });
+
+    if (!json.length) {
+      continue;
+    }
+
+    const headerSet = new Set(Object.keys(json[0]));
+    const matchedHeaders = REQUIRED_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
+
+    if (matchedHeaders.length === REQUIRED_EFFICIENCY_HEADERS.length) {
+      return { sheetName, json };
+    }
+  }
+
+  return null;
+};
+
 const parseWorkbookFile = async (file: File): Promise<ParsedWorkbook> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
@@ -155,10 +208,54 @@ const parseWorkbookFile = async (file: File): Promise<ParsedWorkbook> => {
   };
 };
 
+const parseEfficiencyWorkbookFile = async (file: File): Promise<ParsedEfficiencyWorkbook> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const matched = pickEfficiencySheet(workbook);
+
+  if (!matched) {
+    throw new Error('未找到包含人效标准字段的工作表，请确认表头包含：日期、员工姓名、团队、场次、批次、处理单量、平均处理时长、超时次数。');
+  }
+
+  const rows: EfficiencyRow[] = matched.json
+    .map((record) => ({
+      date: normalizeDate(record['日期']),
+      employee: String(record['员工姓名'] ?? '').trim(),
+      team: String(record['团队'] ?? '').trim(),
+      session: String(record['场次'] ?? '').trim(),
+      batch: String(record['批次'] ?? '').trim(),
+      handledCount: toNumber(record['处理单量']),
+      avgHandleMinutes: toNumber(record['平均处理时长']),
+      timeoutCount: toNumber(record['超时次数']),
+    }))
+    .filter((row) => row.date && row.employee && Number.isFinite(row.handledCount));
+
+  return {
+    rows,
+    importedAt: new Date().toISOString(),
+    sourceName: file.name,
+  };
+};
+
 const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 const formatInteger = (value: number) => value.toLocaleString('zh-CN');
 const formatDateDisplay = (value: string) => (value === ALL_OPTION ? '' : value);
 const parseDateValue = (value: string) => (value && value !== ALL_OPTION ? parseISO(value) : undefined);
+const formatDateTime = (value: string) => (value ? new Date(value).toLocaleString('zh-CN') : '未导入');
+
+const buildFallbackImportHistory = (
+  dataset: Pick<ParsedWorkbook, 'sourceName' | 'importedAt'> | Pick<ParsedEfficiencyWorkbook, 'sourceName' | 'importedAt'>,
+  dataType: ImportRecord['dataType'],
+): ImportRecord[] =>
+  dataset.sourceName
+    ? dataset.sourceName.split(' + ').map((sourceName, index) => ({
+        id: `${dataType}-fallback-${index}-${sourceName}`,
+        sourceName,
+        importedAt: dataset.importedAt,
+        rowCount: 0,
+        dataType,
+      }))
+    : [];
 
 type FilterCriteria = {
   startDate: string;
@@ -510,6 +607,272 @@ const aggregateBatchComparison = (leftRows: ImportedRow[], rightRows: ImportedRo
   );
 };
 
+const aggregateEfficiency = (rows: EfficiencyRow[]) => {
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.handledCount += row.handledCount;
+      acc.timeoutCount += row.timeoutCount;
+      acc.weightedHandleMinutes += row.avgHandleMinutes * row.handledCount;
+      return acc;
+    },
+    { handledCount: 0, timeoutCount: 0, weightedHandleMinutes: 0 },
+  );
+
+  const employees = new Set(rows.map((row) => row.employee).filter(Boolean));
+  const teams = new Set(rows.map((row) => row.team).filter(Boolean));
+
+  return {
+    ...totals,
+    employeeCount: employees.size,
+    teamCount: teams.size,
+    avgHandleMinutes: totals.handledCount ? totals.weightedHandleMinutes / totals.handledCount : 0,
+    timeoutRate: totals.handledCount ? totals.timeoutCount / totals.handledCount : 0,
+  };
+};
+
+const aggregateEfficiencyRanking = (rows: EfficiencyRow[]) =>
+  Object.values(
+    rows.reduce<Record<string, { employee: string; team: string; handledCount: number; timeoutCount: number; weightedHandleMinutes: number }>>(
+      (acc, row) => {
+        if (!acc[row.employee]) {
+          acc[row.employee] = {
+            employee: row.employee,
+            team: row.team,
+            handledCount: 0,
+            timeoutCount: 0,
+            weightedHandleMinutes: 0,
+          };
+        }
+
+        acc[row.employee].handledCount += row.handledCount;
+        acc[row.employee].timeoutCount += row.timeoutCount;
+        acc[row.employee].weightedHandleMinutes += row.avgHandleMinutes * row.handledCount;
+        return acc;
+      },
+      {},
+    ),
+  )
+    .map((item) => ({
+      ...item,
+      avgHandleMinutes: item.handledCount ? item.weightedHandleMinutes / item.handledCount : 0,
+      timeoutRate: item.handledCount ? item.timeoutCount / item.handledCount : 0,
+    }))
+    .sort((a, b) => b.handledCount - a.handledCount)
+    .slice(0, 10);
+
+const aggregateEfficiencyTrend = (rows: EfficiencyRow[]) =>
+  Object.values(
+    rows.reduce<Record<string, { date: string; handledCount: number; timeoutCount: number }>>((acc, row) => {
+      if (!acc[row.date]) {
+        acc[row.date] = { date: row.date, handledCount: 0, timeoutCount: 0 };
+      }
+
+      acc[row.date].handledCount += row.handledCount;
+      acc[row.date].timeoutCount += row.timeoutCount;
+      return acc;
+    }, {}),
+  ).sort((a, b) => a.date.localeCompare(b.date));
+
+const aggregateQualityDimension = (rows: ImportedRow[], key: 'session' | 'batch' | 'category' | 'attribute') =>
+  Object.values(
+    rows.reduce<Record<string, { name: string; declarations: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
+      (acc, row) => {
+        const name = String(row[key] || '未分类');
+        if (!acc[name]) {
+          acc[name] = { name, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
+        }
+
+        acc[name].declarations += row.declarations;
+        acc[name].ambiguousPasses += row.ambiguousPasses;
+        acc[name].rejects += row.rejects;
+        acc[name].proofRejects += row.proofRejects;
+        return acc;
+      },
+      {},
+    ),
+  )
+    .map((item) => ({
+      ...item,
+      metrics: aggregateMetrics([
+        {
+          date: '',
+          session: '',
+          batch: '',
+          category: '',
+          attribute: '',
+          declarations: item.declarations,
+          ambiguousPasses: item.ambiguousPasses,
+          rejects: item.rejects,
+          proofRejects: item.proofRejects,
+        },
+      ]),
+    }))
+    .sort((a, b) => b.declarations - a.declarations);
+
+const splitTrendMetrics = (rows: ImportedRow[]) => {
+  const dates = [...new Set(rows.map((row) => row.date))].sort((a, b) => a.localeCompare(b));
+  const midpoint = Math.ceil(dates.length / 2);
+  const earlyDates = new Set(dates.slice(0, midpoint));
+  const lateDates = new Set(dates.slice(midpoint));
+  const earlyMetrics = aggregateMetrics(rows.filter((row) => earlyDates.has(row.date)));
+  const lateMetrics = aggregateMetrics(rows.filter((row) => lateDates.has(row.date)));
+
+  return {
+    dates,
+    earlyMetrics,
+    lateMetrics,
+    proofAccuracyDelta: lateMetrics.proofAccuracy - earlyMetrics.proofAccuracy,
+    exactPassRateDelta: lateMetrics.exactPassRate - earlyMetrics.exactPassRate,
+  };
+};
+
+const createAiAnalysis = ({
+  qualityMetrics,
+  qualityRows,
+  topAttributes,
+  categoryData,
+  efficiencyMetrics,
+  efficiencyRanking,
+}: {
+  qualityMetrics: ReturnType<typeof aggregateMetrics>;
+  qualityRows: ImportedRow[];
+  topAttributes: ReturnType<typeof aggregateAttributes>;
+  categoryData: ReturnType<typeof aggregateCategories>;
+  efficiencyMetrics: ReturnType<typeof aggregateEfficiency>;
+  efficiencyRanking: ReturnType<typeof aggregateEfficiencyRanking>;
+}) => {
+  const topAttribute = topAttributes[0];
+  const topCategory = categoryData[0];
+  const topEmployee = efficiencyRanking[0];
+  const hasQualityData = qualityMetrics.declarations > 0;
+  const hasEfficiencyData = efficiencyMetrics.handledCount > 0;
+  const sessionDrivers = aggregateQualityDimension(qualityRows, 'session');
+  const batchDrivers = aggregateQualityDimension(qualityRows, 'batch');
+  const categoryDrivers = aggregateQualityDimension(qualityRows, 'category');
+  const attributeDrivers = aggregateQualityDimension(qualityRows, 'attribute');
+  const weakSessions = sessionDrivers
+    .filter((item) => item.declarations >= 20)
+    .sort((a, b) => a.metrics.proofAccuracy - b.metrics.proofAccuracy)
+    .slice(0, 3);
+  const weakBatches = batchDrivers
+    .filter((item) => item.declarations >= 20)
+    .sort((a, b) => a.metrics.proofAccuracy - b.metrics.proofAccuracy)
+    .slice(0, 3);
+  const riskyAttributes = attributeDrivers
+    .filter((item) => item.declarations >= 10)
+    .sort((a, b) => b.metrics.rejectRate - a.metrics.rejectRate)
+    .slice(0, 5);
+  const ambiguousCategories = categoryDrivers
+    .filter((item) => item.declarations >= 10)
+    .sort((a, b) => b.metrics.ambiguousRate - a.metrics.ambiguousRate)
+    .slice(0, 3);
+  const trendSplit = splitTrendMetrics(qualityRows);
+  const healthScore = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        qualityMetrics.proofAccuracy * 55 +
+          qualityMetrics.exactPassRate * 30 +
+          (1 - qualityMetrics.ambiguousRate) * 8 +
+          (1 - qualityMetrics.rejectRate) * 7,
+      ),
+    ),
+  );
+  const healthLevel = healthScore >= 85 ? '健康' : healthScore >= 70 ? '需关注' : '高风险';
+  const qualityDateRange = qualityRows.length
+    ? `${qualityRows[0].date} ~ ${qualityRows[qualityRows.length - 1].date}`
+    : '暂无质量数据';
+
+  const summary = [
+    hasQualityData
+      ? `质量健康评分 ${healthScore}/100，状态为「${healthLevel}」。当前共有 ${formatInteger(qualityMetrics.declarations)} 次申报，举证准确率 ${formatPercent(qualityMetrics.proofAccuracy)}，精准通过率 ${formatPercent(qualityMetrics.exactPassRate)}。`
+      : '当前还没有可分析的质量数据，请先在数据导入模块导入质量周数据。',
+    hasQualityData && trendSplit.dates.length > 1
+      ? `从前半段到后半段看，举证准确率变化 ${formatPercent(trendSplit.proofAccuracyDelta)}，精准通过率变化 ${formatPercent(trendSplit.exactPassRateDelta)}。`
+      : '当前日期样本不足，暂不判断周内趋势变化。',
+    hasEfficiencyData
+      ? `人效侧累计处理 ${formatInteger(efficiencyMetrics.handledCount)} 单，覆盖 ${formatInteger(efficiencyMetrics.employeeCount)} 人，平均处理时长 ${efficiencyMetrics.avgHandleMinutes.toFixed(2)} 分钟。`
+      : '当前还没有可分析的人效数据；AI 分析会先基于质量数据输出结论。',
+  ];
+
+  const risks = [
+    weakSessions.length
+      ? `场次拖累项：${weakSessions.map((item) => `「${item.name}」${formatPercent(item.metrics.proofAccuracy)} / ${formatInteger(item.declarations)}次`).join('；')}。`
+      : '场次维度暂未发现明显拖累项，或样本量不足。',
+    weakBatches.length
+      ? `批次拖累项：${weakBatches.map((item) => `「${item.name}」${formatPercent(item.metrics.proofAccuracy)} / ${formatInteger(item.declarations)}次`).join('；')}。`
+      : '批次维度暂未发现明显拖累项，或样本量不足。',
+    qualityMetrics.ambiguousRate > 0.08
+      ? `模棱两可率达到 ${formatPercent(qualityMetrics.ambiguousRate)}，建议优先复盘模糊通过较集中的属性项。`
+      : `模棱两可率为 ${formatPercent(qualityMetrics.ambiguousRate)}，当前未触发高模糊风险。`,
+    qualityMetrics.rejectRate > 0.12
+      ? `拒绝率达到 ${formatPercent(qualityMetrics.rejectRate)}，需要关注未通过集中场次和批次。`
+      : `拒绝率为 ${formatPercent(qualityMetrics.rejectRate)}，整体拒绝压力可控。`,
+    riskyAttributes.length
+      ? `拒绝风险属性项：${riskyAttributes.map((item) => `「${item.name}」拒绝率${formatPercent(item.metrics.rejectRate)}`).join('；')}。`
+      : '属性项维度暂未发现高拒绝风险，或样本量不足。',
+    hasEfficiencyData && efficiencyMetrics.timeoutRate > 0.05
+      ? `人效超时率为 ${formatPercent(efficiencyMetrics.timeoutRate)}，建议检查高峰日期或人员负载。`
+      : hasEfficiencyData
+        ? `人效超时率为 ${formatPercent(efficiencyMetrics.timeoutRate)}，暂未发现明显超时压力。`
+        : '人效底表未导入，暂不输出人员效率风险。',
+  ];
+
+  const actions = [
+    topAttribute
+      ? `优先复盘高频属性项「${topAttribute.attribute}」，当前申报 ${formatInteger(topAttribute.declarations)} 次。`
+      : '先补充质量底表，形成属性项维度的稳定样本。',
+    topCategory
+      ? `关注属性项分类「${topCategory.name}」，其占当前分类分布 ${formatPercent(topCategory.value)}。`
+      : '属性项分类样本不足，暂不做分类归因。',
+    ambiguousCategories.length
+      ? `模糊口径复盘建议优先看：${ambiguousCategories.map((item) => `「${item.name}」${formatPercent(item.metrics.ambiguousRate)}`).join('、')}。`
+      : '模糊通过暂无明显分类集中，可保持常规抽检。',
+    topEmployee
+      ? `人效侧可参考「${topEmployee.employee}」的处理结构：处理 ${formatInteger(topEmployee.handledCount)} 单，超时率 ${formatPercent(topEmployee.timeoutRate)}。`
+      : '导入人效底表后，可进一步识别高产能人员和异常超时人员。',
+    weakSessions[0] || weakBatches[0]
+      ? `建议本周复盘优先级：先看${weakSessions[0] ? `场次「${weakSessions[0].name}」` : ''}${weakSessions[0] && weakBatches[0] ? '，再看' : ''}${weakBatches[0] ? `批次「${weakBatches[0].name}」` : ''}。`
+      : '建议本周以高频属性项和分类抽检为主，暂不需要大规模专项复盘。',
+  ];
+
+  const drivers = [
+    topAttribute
+      ? `最大样本属性项：「${topAttribute.attribute}」，申报 ${formatInteger(topAttribute.declarations)} 次，适合作为口径校准样本。`
+      : '暂无最大样本属性项。',
+    topCategory
+      ? `最大分类占比：「${topCategory.name}」，占比 ${formatPercent(topCategory.value)}，对整体指标解释权重较高。`
+      : '暂无分类占比信息。',
+    weakSessions[0]
+      ? `最弱场次：「${weakSessions[0].name}」，举证准确率 ${formatPercent(weakSessions[0].metrics.proofAccuracy)}。`
+      : '暂未识别最弱场次。',
+    weakBatches[0]
+      ? `最弱批次：「${weakBatches[0].name}」，举证准确率 ${formatPercent(weakBatches[0].metrics.proofAccuracy)}。`
+      : '暂未识别最弱批次。',
+  ];
+
+  const report = [
+    `【预质检质量看板 AI 分析】`,
+    `分析范围：${qualityDateRange}`,
+    `健康评分：${healthScore}/100（${healthLevel}）`,
+    '',
+    '一、核心结论',
+    ...summary.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    '二、关键驱动',
+    ...drivers.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    '三、风险提醒',
+    ...risks.map((item, index) => `${index + 1}. ${item}`),
+    '',
+    '四、建议动作',
+    ...actions.map((item, index) => `${index + 1}. ${item}`),
+  ].join('\n');
+
+  return { summary, risks, actions, drivers, report, healthScore, healthLevel };
+};
+
 const downloadTemplate = () => {
   const sample = [
     {
@@ -529,6 +892,26 @@ const downloadTemplate = () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, '模板');
   XLSX.writeFile(workbook, '周数据导入模板.xlsx');
+};
+
+const downloadEfficiencyTemplate = () => {
+  const sample = [
+    {
+      日期: '2026-05-31',
+      员工姓名: '张三',
+      团队: '预质检一组',
+      场次: '京东寄卖',
+      批次: '第4批',
+      处理单量: 120,
+      平均处理时长: 3.5,
+      超时次数: 4,
+    },
+  ];
+
+  const worksheet = XLSX.utils.json_to_sheet(sample);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '人效模板');
+  XLSX.writeFile(workbook, '人效周数据导入模板.xlsx');
 };
 
 const fetchSharedDataset = async (): Promise<SharedDatasetResponse> => {
@@ -561,9 +944,40 @@ const clearSharedDataset = async (): Promise<SharedDatasetResponse> => {
   return response.json();
 };
 
+const fetchEfficiencyDataset = async (): Promise<EfficiencyDatasetResponse> => {
+  const response = await fetch('/api/efficiency-dataset');
+  if (!response.ok) {
+    throw new Error('读取人效数据失败');
+  }
+  return response.json();
+};
+
+const mergeEfficiencyDataset = async (payload: ParsedEfficiencyWorkbook): Promise<EfficiencyDatasetResponse> => {
+  const response = await fetch('/api/efficiency-dataset/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error('写入人效数据失败');
+  }
+
+  return response.json();
+};
+
+const clearEfficiencyDataset = async (): Promise<EfficiencyDatasetResponse> => {
+  const response = await fetch('/api/efficiency-dataset', { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error('清空人效数据失败');
+  }
+  return response.json();
+};
+
 function App() {
   const [dataset, setDataset] = useState<ParsedWorkbook>(emptyWorkbook);
-  const [activeView, setActiveView] = useState<'overview' | 'compare' | 'attribute'>('overview');
+  const [efficiencyDataset, setEfficiencyDataset] = useState<ParsedEfficiencyWorkbook>(emptyEfficiencyWorkbook);
+  const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [startDateFilter, setStartDateFilter] = useState(ALL_OPTION);
   const [endDateFilter, setEndDateFilter] = useState(ALL_OPTION);
   const [sessionFilter, setSessionFilter] = useState(ALL_OPTION);
@@ -578,6 +992,7 @@ function App() {
   const [compareBatchSecondSelection, setCompareBatchSecondSelection] = useState(ALL_OPTION);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isEfficiencyImporting, setIsEfficiencyImporting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -589,6 +1004,15 @@ function App() {
         }
       } catch {
         setError('共享数据服务暂时不可用，请确认后端已启动。');
+      }
+
+      try {
+        const sharedEfficiencyDataset = await fetchEfficiencyDataset();
+        if (Array.isArray(sharedEfficiencyDataset.rows)) {
+          setEfficiencyDataset(sharedEfficiencyDataset);
+        }
+      } catch {
+        setEfficiencyDataset(emptyEfficiencyWorkbook);
       } finally {
         setIsLoading(false);
       }
@@ -722,6 +1146,39 @@ function App() {
     () => aggregateDimensionMetrics(filteredRows, 'batch'),
     [filteredRows],
   );
+  const efficiencyMetrics = useMemo(() => aggregateEfficiency(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const efficiencyRanking = useMemo(() => aggregateEfficiencyRanking(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const efficiencyTrend = useMemo(() => aggregateEfficiencyTrend(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const qualityImportHistory = useMemo(
+    () => dataset.importHistory?.length ? dataset.importHistory : buildFallbackImportHistory(dataset, 'quality'),
+    [dataset],
+  );
+  const efficiencyImportHistory = useMemo(
+    () =>
+      efficiencyDataset.importHistory?.length
+        ? efficiencyDataset.importHistory
+        : buildFallbackImportHistory(efficiencyDataset, 'efficiency'),
+    [efficiencyDataset],
+  );
+  const allImportHistory = useMemo(
+    () =>
+      [...qualityImportHistory, ...efficiencyImportHistory].sort((a, b) =>
+        b.importedAt.localeCompare(a.importedAt),
+      ),
+    [efficiencyImportHistory, qualityImportHistory],
+  );
+  const aiAnalysis = useMemo(
+    () =>
+      createAiAnalysis({
+        qualityMetrics: metrics,
+        qualityRows: filteredRows,
+        topAttributes,
+        categoryData,
+        efficiencyMetrics,
+        efficiencyRanking,
+      }),
+    [categoryData, efficiencyMetrics, efficiencyRanking, filteredRows, metrics, topAttributes],
+  );
 
   const cards: MetricsCardData[] = [
     {
@@ -807,6 +1264,38 @@ function App() {
       setAttributeFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空共享数据失败。');
+    }
+  };
+
+  const handleEfficiencyImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setIsEfficiencyImporting(true);
+    setError('');
+
+    try {
+      const parsed = await parseEfficiencyWorkbookFile(file);
+      const nextDataset = await mergeEfficiencyDataset(parsed);
+      setEfficiencyDataset(nextDataset);
+      setActiveView('efficiency');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '人效数据导入失败，请检查文件格式。');
+    } finally {
+      setIsEfficiencyImporting(false);
+      event.target.value = '';
+    }
+  };
+
+  const clearEfficiencyData = async () => {
+    try {
+      setError('');
+      const nextDataset = await clearEfficiencyDataset();
+      setEfficiencyDataset(nextDataset);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清空人效数据失败。');
     }
   };
 
@@ -922,6 +1411,24 @@ function App() {
                 active={activeView === 'attribute'}
                 onClick={() => setActiveView('attribute')}
               />
+              <SidebarNavItem
+                icon={<Users size={20} />}
+                label="人效分析"
+                active={activeView === 'efficiency'}
+                onClick={() => setActiveView('efficiency')}
+              />
+              <SidebarNavItem
+                icon={<BrainCircuit size={20} />}
+                label="AI 分析"
+                active={activeView === 'ai'}
+                onClick={() => setActiveView('ai')}
+              />
+              <SidebarNavItem
+                icon={<ClipboardList size={20} />}
+                label="数据导入"
+                active={activeView === 'import'}
+                onClick={() => setActiveView('import')}
+              />
             </div>
           </div>
         </aside>
@@ -931,6 +1438,9 @@ function App() {
             <MobileNavChip label="首页" active={activeView === 'overview'} onClick={() => setActiveView('overview')} />
             <MobileNavChip label="对比分析" active={activeView === 'compare'} onClick={() => setActiveView('compare')} />
             <MobileNavChip label="属性项分析" active={activeView === 'attribute'} onClick={() => setActiveView('attribute')} />
+            <MobileNavChip label="人效分析" active={activeView === 'efficiency'} onClick={() => setActiveView('efficiency')} />
+            <MobileNavChip label="AI 分析" active={activeView === 'ai'} onClick={() => setActiveView('ai')} />
+            <MobileNavChip label="数据导入" active={activeView === 'import'} onClick={() => setActiveView('import')} />
           </div>
 
           <motion.section
@@ -953,45 +1463,9 @@ function App() {
                       </span>
                     </div>
                     <p className="mt-1 text-sm text-slate-500">
-                      导入新的数仓底表后，会自动追加到历史数据池并按统一口径重算核心指标。
+                      聚焦举证准确率、精准通过率、模棱两可率与拒绝率，按场次、批次、属性项动态拆解。
                     </p>
                   </div>
-                </div>
-
-                <div className="flex flex-col gap-3 xl:items-end">
-                  <div className="flex flex-wrap gap-2">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800">
-                      <Upload size={16} />
-                      {isImporting ? '导入中...' : '追加导入周数据'}
-                      <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImport} />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={downloadTemplate}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                    >
-                      <HardDriveDownload size={16} />
-                      模板
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearData}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-700 transition hover:bg-rose-100"
-                    >
-                      <Trash2 size={16} />
-                      清空
-                    </button>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <ToolbarChip icon={<FileSpreadsheet size={14} />} label={dataset.sourceName || '尚未导入文件'} wide />
-                    <ToolbarChip
-                      icon={<CalendarDays size={14} />}
-                      label={dataset.importedAt ? new Date(dataset.importedAt).toLocaleString('zh-CN') : '未导入'}
-                    />
-                    <ToolbarChip icon={<Database size={14} />} label={`${formatInteger(dataset.rows.length)} 条记录`} />
-                  </div>
-                  <p className="text-xs text-slate-400">重复记录会自动去重，后续导入不会覆盖历史周数据。</p>
                 </div>
               </div>
 
@@ -1044,6 +1518,34 @@ function App() {
                         setCompareRightEnd(ALL_OPTION);
                       }}
                     />
+                  </div>
+                ) : activeView === 'efficiency' || activeView === 'ai' || activeView === 'import' ? (
+                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-slate-200">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-white">
+                          {activeView === 'efficiency'
+                            ? '人效数据独立分析区'
+                            : activeView === 'ai'
+                              ? 'AI 分析准备区'
+                              : '数据导入与记录区'}
+                        </p>
+                        <p className="mt-1 text-xs leading-6 text-slate-300">
+                          {activeView === 'efficiency'
+                            ? '人效底表与质量底表分开导入、分开存储，当前版本先提供基础产能、时长与超时概览。'
+                            : activeView === 'ai'
+                              ? 'AI 分析将读取质量数据与人效数据，先沉淀规则化洞察，后续可接入大模型生成周报。'
+                              : '质量周数据和人效周数据在这里统一导入，并保留每次导入记录。'}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-200">
+                        {activeView === 'efficiency'
+                          ? `${formatInteger(efficiencyDataset.rows.length)} 条人效记录`
+                          : activeView === 'ai'
+                            ? `${formatInteger(dataset.rows.length)} 条质量 / ${formatInteger(efficiencyDataset.rows.length)} 条人效`
+                            : `${formatInteger(allImportHistory.length)} 条导入记录`}
+                      </span>
+                    </div>
                   </div>
                 ) : (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(3,minmax(150px,1fr))] xl:items-end">
@@ -1491,7 +1993,7 @@ function App() {
                 </div>
               </section>
             </>
-          ) : (
+          ) : activeView === 'attribute' ? (
             <>
               <section className="mt-8 grid gap-5 xl:grid-cols-4">
                 <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
@@ -1604,6 +2106,203 @@ function App() {
                 </div>
               </section>
             </>
+          ) : activeView === 'efficiency' ? (
+            <>
+              <section className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+                <StatCard title="处理单量" value={formatInteger(efficiencyMetrics.handledCount)} hint={`${formatInteger(efficiencyDataset.rows.length)} 条人效记录`} tone="slate" icon={<Database size={18} />} />
+                <StatCard title="覆盖人员" value={formatInteger(efficiencyMetrics.employeeCount)} hint={`覆盖 ${formatInteger(efficiencyMetrics.teamCount)} 个团队`} tone="blue" icon={<Users size={18} />} />
+                <StatCard title="平均处理时长" value={`${efficiencyMetrics.avgHandleMinutes.toFixed(2)} 分钟`} hint="按处理单量加权" tone="emerald" icon={<Target size={18} />} />
+                <StatCard title="超时率" value={formatPercent(efficiencyMetrics.timeoutRate)} hint={`超时 ${formatInteger(efficiencyMetrics.timeoutCount)} 次`} tone="amber" icon={<CircleSlash size={18} />} />
+              </section>
+
+              <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Efficiency Trend</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">人效趋势</h2>
+                    <p className="mt-2 text-sm text-slate-500">当前先展示处理单量与超时次数，后续可接入处理时长、返工等更多字段。</p>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={efficiencyTrend}>
+                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip />
+                        <Bar dataKey="handledCount" fill="#1d4ed8" radius={[10, 10, 0, 0]} name="处理单量" />
+                        <Bar dataKey="timeoutCount" fill="#f59e0b" radius={[10, 10, 0, 0]} name="超时次数" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Employee Ranking</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">人员处理量排行</h2>
+                    <p className="mt-2 text-sm text-slate-500">用于先观察人员产能分布，后续可叠加准确率与稳定性。</p>
+                  </div>
+                  <div className="space-y-3">
+                    {efficiencyRanking.length ? (
+                      efficiencyRanking.map((item, index) => (
+                        <div key={item.employee} className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="truncate font-medium text-slate-900">
+                                {index + 1}. {item.employee}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">{item.team || '未分组'} · 平均 {item.avgHandleMinutes.toFixed(2)} 分钟</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-display text-xl font-semibold text-slate-900">{formatInteger(item.handledCount)}</p>
+                              <p className="text-xs text-slate-500">超时率 {formatPercent(item.timeoutRate)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                        还没有导入人效底表。请使用顶部“导入人效周数据”。
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </>
+          ) : activeView === 'import' ? (
+            <>
+              <section className="mt-8 grid gap-6 xl:grid-cols-2">
+                <ImportDatasetCard
+                  title="质量周数据"
+                  description="用于首页、对比分析和属性项分析。字段包含日期、场次、批次、属性项、申报次数等。"
+                  icon={<FileSpreadsheet size={22} />}
+                  tone="slate"
+                  isImporting={isImporting}
+                  importLabel="追加导入质量周数据"
+                  templateLabel="下载质量模板"
+                  clearLabel="清空质量数据"
+                  sourceName={dataset.sourceName || '尚未导入文件'}
+                  importedAt={dataset.importedAt}
+                  rowCount={dataset.rows.length}
+                  onImport={handleImport}
+                  onDownloadTemplate={downloadTemplate}
+                  onClear={clearData}
+                />
+                <ImportDatasetCard
+                  title="人效周数据"
+                  description="独立用于人效分析。当前字段包含日期、员工、团队、场次、批次、处理单量、平均处理时长、超时次数。"
+                  icon={<Users size={22} />}
+                  tone="blue"
+                  isImporting={isEfficiencyImporting}
+                  importLabel="导入人效周数据"
+                  templateLabel="下载人效模板"
+                  clearLabel="清空人效数据"
+                  sourceName={efficiencyDataset.sourceName || '尚未导入文件'}
+                  importedAt={efficiencyDataset.importedAt}
+                  rowCount={efficiencyDataset.rows.length}
+                  onImport={handleEfficiencyImport}
+                  onDownloadTemplate={downloadEfficiencyTemplate}
+                  onClear={clearEfficiencyData}
+                />
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Import History</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">导入记录</h2>
+                    <p className="mt-2 text-sm text-slate-500">记录质量数据与人效数据每次导入的文件、时间和解析行数。</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+                    共 {formatInteger(allImportHistory.length)} 次
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  {allImportHistory.length ? (
+                    allImportHistory.map((record) => (
+                      <div key={record.id} className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3 md:grid-cols-[120px_1fr_180px_120px] md:items-center">
+                        <span
+                          className={`w-fit rounded-full px-3 py-1 text-xs font-medium ${
+                            record.dataType === 'quality'
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          {record.dataType === 'quality' ? '质量数据' : '人效数据'}
+                        </span>
+                        <span className="break-all text-sm font-medium text-slate-800">{record.sourceName}</span>
+                        <span className="text-sm text-slate-500">{formatDateTime(record.importedAt)}</span>
+                        <span className="text-sm text-slate-500">
+                          {record.rowCount ? `${formatInteger(record.rowCount)} 行` : '历史记录'}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                      暂无导入记录。请先导入质量周数据或人效周数据。
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="mt-8 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <p className="text-sm uppercase tracking-[0.26em] text-slate-400">AI Analysis</p>
+                  <h2 className="mt-2 font-display text-2xl text-slate-900">AI 分析已生成</h2>
+                  <p className="mt-3 text-sm leading-7 text-slate-500">
+                    当前为规则版 AI 分析，不依赖外部模型密钥；会读取当前筛选后的质量数据和已导入的人效数据生成结论。
+                  </p>
+                  <div className="mt-6 rounded-3xl bg-[linear-gradient(135deg,_#0f172a_0%,_#1e3a5f_100%)] p-5 text-white">
+                    <p className="text-sm text-slate-300">质量健康评分</p>
+                    <div className="mt-3 flex items-end gap-3">
+                      <p className="font-display text-5xl">{aiAnalysis.healthScore}</p>
+                      <p className="pb-2 text-sm text-slate-300">/ 100 · {aiAnalysis.healthLevel}</p>
+                    </div>
+                    <div className="mt-4 h-2 rounded-full bg-white/15">
+                      <div
+                        className="h-2 rounded-full bg-cyan-300"
+                        style={{ width: `${aiAnalysis.healthScore}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <StatCard title="质量记录" value={formatInteger(dataset.rows.length)} hint="来自质量周数据" tone="blue" icon={<Database size={18} />} />
+                    <StatCard title="人效记录" value={formatInteger(efficiencyDataset.rows.length)} hint="来自人效周数据" tone="emerald" icon={<Users size={18} />} />
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Feishu Draft</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">飞书周报草稿</h2>
+                      <p className="mt-2 text-sm text-slate-500">可直接复制到飞书，再人工微调措辞。</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard?.writeText(aiAnalysis.report)}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
+                    >
+                      <ClipboardList size={16} />
+                      复制草稿
+                    </button>
+                  </div>
+                  <pre className="mt-5 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-slate-100">
+                    {aiAnalysis.report}
+                  </pre>
+                </div>
+              </section>
+
+              <section className="mt-8 grid gap-6 xl:grid-cols-4">
+                <AiInsightColumn title="核心结论" items={aiAnalysis.summary} tone="blue" />
+                <AiInsightColumn title="关键驱动" items={aiAnalysis.drivers} tone="slate" />
+                <AiInsightColumn title="风险提醒" items={aiAnalysis.risks} tone="amber" />
+                <AiInsightColumn title="建议动作" items={aiAnalysis.actions} tone="emerald" />
+              </section>
+            </>
           )}
         </div>
       </div>
@@ -1657,6 +2356,126 @@ function MobileNavChip({
     >
       {label}
     </button>
+  );
+}
+
+function ImportDatasetCard({
+  title,
+  description,
+  icon,
+  tone,
+  isImporting,
+  importLabel,
+  templateLabel,
+  clearLabel,
+  sourceName,
+  importedAt,
+  rowCount,
+  onImport,
+  onDownloadTemplate,
+  onClear,
+}: {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  tone: 'slate' | 'blue';
+  isImporting: boolean;
+  importLabel: string;
+  templateLabel: string;
+  clearLabel: string;
+  sourceName: string;
+  importedAt: string;
+  rowCount: number;
+  onImport: (event: ChangeEvent<HTMLInputElement>) => void;
+  onDownloadTemplate: () => void;
+  onClear: () => void;
+}) {
+  const accentClass =
+    tone === 'blue'
+      ? 'bg-blue-700 text-white hover:bg-blue-800'
+      : 'bg-slate-900 text-white hover:bg-slate-800';
+
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+      <div className="flex items-start gap-4">
+        <div
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${
+            tone === 'blue' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-900'
+          }`}
+        >
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <h2 className="font-display text-2xl text-slate-900">{title}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-500">{description}</p>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 text-xs text-slate-500">
+        <ToolbarChip icon={<FileSpreadsheet size={14} />} label={sourceName} wide />
+        <div className="flex flex-wrap gap-2">
+          <ToolbarChip icon={<CalendarDays size={14} />} label={formatDateTime(importedAt)} />
+          <ToolbarChip icon={<Database size={14} />} label={`${formatInteger(rowCount)} 条记录`} />
+        </div>
+      </div>
+
+      <div className="mt-6 flex flex-wrap gap-2">
+        <label className={`inline-flex cursor-pointer items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition ${accentClass}`}>
+          <Upload size={16} />
+          {isImporting ? '导入中...' : importLabel}
+          <input type="file" accept=".xlsx,.xls" className="hidden" onChange={onImport} />
+        </label>
+        <button
+          type="button"
+          onClick={onDownloadTemplate}
+          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+        >
+          <HardDriveDownload size={16} />
+          {templateLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-700 transition hover:bg-rose-100"
+        >
+          <Trash2 size={16} />
+          {clearLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AiInsightColumn({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  tone: 'blue' | 'amber' | 'emerald' | 'slate';
+}) {
+  const toneClass =
+    tone === 'blue'
+      ? 'border-blue-100 bg-blue-50/70 text-blue-700'
+      : tone === 'amber'
+        ? 'border-amber-100 bg-amber-50/70 text-amber-700'
+        : tone === 'emerald'
+          ? 'border-emerald-100 bg-emerald-50/70 text-emerald-700'
+          : 'border-slate-100 bg-slate-50/80 text-slate-700';
+
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+      <h3 className="font-display text-xl text-slate-900">{title}</h3>
+      <div className="mt-5 space-y-3">
+        {items.map((item, index) => (
+          <div key={`${title}-${item}`} className={`rounded-2xl border px-4 py-3 text-sm leading-6 ${toneClass}`}>
+            <span className="mr-2 font-semibold">{index + 1}.</span>
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -16,9 +16,38 @@ export interface ParsedWorkbook {
   rows: ImportedRow[];
   importedAt: string;
   sourceName: string;
+  importHistory?: ImportRecord[];
 }
 
 export interface SharedDatasetResponse extends ParsedWorkbook {}
+
+export interface EfficiencyRow {
+  date: string;
+  employee: string;
+  team: string;
+  session: string;
+  batch: string;
+  handledCount: number;
+  avgHandleMinutes: number;
+  timeoutCount: number;
+}
+
+export interface ParsedEfficiencyWorkbook {
+  rows: EfficiencyRow[];
+  importedAt: string;
+  sourceName: string;
+  importHistory?: ImportRecord[];
+}
+
+export interface EfficiencyDatasetResponse extends ParsedEfficiencyWorkbook {}
+
+export interface ImportRecord {
+  id: string;
+  sourceName: string;
+  importedAt: string;
+  rowCount: number;
+  dataType: 'quality' | 'efficiency';
+}
 
 export interface MetricsCardData {
   title: string;
