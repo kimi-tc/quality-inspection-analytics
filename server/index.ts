@@ -395,6 +395,7 @@ app.post('/api/property-category-dictionary/reset', async (_req, res) => {
 app.post('/api/ai-analysis', async (req, res) => {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   const baseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com';
+  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 60000);
 
   if (!apiKey) {
     return res.status(503).json({
@@ -412,8 +413,11 @@ app.post('/api/ai-analysis', async (req, res) => {
   }
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const upstreamResponse = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -442,16 +446,27 @@ app.post('/api/ai-analysis', async (req, res) => {
           },
         ],
       }),
-    });
+    }).finally(() => clearTimeout(timeout));
 
-    const payload = await upstreamResponse.json() as {
+    const rawPayload = await upstreamResponse.text();
+    let payload: {
       choices?: Array<{ message?: { content?: string } }>;
       error?: { message?: string };
-    };
+    } = {};
+
+    try {
+      payload = rawPayload ? JSON.parse(rawPayload) : {};
+    } catch {
+      payload = {
+        error: {
+          message: rawPayload.slice(0, 240) || 'DeepSeek 返回了非 JSON 响应。',
+        },
+      };
+    }
 
     if (!upstreamResponse.ok) {
       return res.status(upstreamResponse.status).json({
-        message: payload.error?.message || 'DeepSeek 分析生成失败',
+        message: payload.error?.message || `DeepSeek 分析生成失败，HTTP ${upstreamResponse.status}`,
       });
     }
 
@@ -461,7 +476,12 @@ app.post('/api/ai-analysis', async (req, res) => {
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '大模型分析生成失败';
+    const message =
+      error instanceof Error && error.name === 'AbortError'
+        ? `DeepSeek 请求超过 ${Math.round(timeoutMs / 1000)} 秒未返回，请稍后重试或切换更快的模型。`
+        : error instanceof Error
+          ? error.message
+          : '大模型分析生成失败';
     res.status(500).json({ message });
   }
 });
