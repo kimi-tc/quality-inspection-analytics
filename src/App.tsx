@@ -7,6 +7,8 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -74,11 +76,23 @@ const REQUIRED_EFFICIENCY_HEADERS = [
   '日期',
   '员工姓名',
   '团队',
-  '场次',
-  '批次',
   '处理单量',
   '平均处理时长',
   '超时次数',
+] as const;
+
+const REQUIRED_AUDIT_EFFICIENCY_HEADERS = [
+  '日期',
+  '员工姓名',
+  '团队',
+  '总审核量',
+  '加权审核量',
+  '一审审核量',
+  '一审通过量',
+  '精准通过量',
+  '未通过量',
+  '举证拒绝量',
+  '模糊通过量',
 ] as const;
 
 const ALL_OPTION = '全部';
@@ -145,6 +159,8 @@ const toNumber = (value: unknown): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const safeRateFromCounts = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+
 const normalizeDate = (value: unknown): string => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value.toISOString().slice(0, 10);
@@ -167,13 +183,25 @@ const normalizeDate = (value: unknown): string => {
   return raw.replace(/\//g, '-');
 };
 
+const sheetToRows = (sheet: XLSX.WorkSheet) => {
+  const cellAddresses = Object.keys(sheet).filter((key) => !key.startsWith('!'));
+  if (cellAddresses.length) {
+    const ranges = cellAddresses.map((address) => XLSX.utils.decode_cell(address));
+    const maxRow = Math.max(...ranges.map((cell) => cell.r));
+    const maxCol = Math.max(...ranges.map((cell) => cell.c));
+    sheet['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow, c: maxCol } });
+  }
+
+  return XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    defval: '',
+    raw: false,
+  });
+};
+
 const pickDataSheet = (workbook: XLSX.WorkBook) => {
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
-    const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      defval: '',
-      raw: false,
-    });
+    const json = sheetToRows(sheet);
 
     if (!json.length) {
       continue;
@@ -193,19 +221,20 @@ const pickDataSheet = (workbook: XLSX.WorkBook) => {
 const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
-    const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      defval: '',
-      raw: false,
-    });
+    const json = sheetToRows(sheet);
 
     if (!json.length) {
       continue;
     }
 
     const headerSet = new Set(Object.keys(json[0]));
-    const matchedHeaders = REQUIRED_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
+    const matchedLegacyHeaders = REQUIRED_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
+    const matchedAuditHeaders = REQUIRED_AUDIT_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
 
-    if (matchedHeaders.length === REQUIRED_EFFICIENCY_HEADERS.length) {
+    if (
+      matchedLegacyHeaders.length === REQUIRED_EFFICIENCY_HEADERS.length ||
+      matchedAuditHeaders.length === REQUIRED_AUDIT_EFFICIENCY_HEADERS.length
+    ) {
       return { sheetName, json };
     }
   }
@@ -263,20 +292,41 @@ const parseEfficiencyWorkbookFile = async (file: File): Promise<ParsedEfficiency
   const matched = pickEfficiencySheet(workbook);
 
   if (!matched) {
-    throw new Error('未找到包含人效标准字段的工作表，请确认表头包含：日期、员工姓名、团队、场次、批次、处理单量、平均处理时长、超时次数。');
+    throw new Error('未找到包含人效标准字段的工作表，请确认表头包含新版审核人效字段，或旧版：日期、员工姓名、团队、处理单量、平均处理时长、超时次数。');
   }
 
   const rows: EfficiencyRow[] = matched.json
-    .map((record) => ({
-      date: normalizeDate(record['日期']),
-      employee: String(record['员工姓名'] ?? '').trim(),
-      team: String(record['团队'] ?? '').trim(),
-      session: String(record['场次'] ?? '').trim(),
-      batch: String(record['批次'] ?? '').trim(),
-      handledCount: toNumber(record['处理单量']),
-      avgHandleMinutes: toNumber(record['平均处理时长']),
-      timeoutCount: toNumber(record['超时次数']),
-    }))
+    .map((record) => {
+      const firstAuditCount = toNumber(record['一审审核量']);
+      const firstAuditPassCount = toNumber(record['一审通过量']);
+      const precisionPassCount = toNumber(record['精准通过量']);
+      const proofRefusalCount = toNumber(record['举证拒绝量']);
+      const ambiguousCount = toNumber(record['模糊通过量']);
+      const handledCount = toNumber(record['总审核量'] ?? record['处理单量']);
+
+      return {
+        date: normalizeDate(record['日期']),
+        employee: String(record['员工姓名'] ?? '').trim(),
+        team: String(record['团队'] ?? '').trim(),
+        session: String(record['场次'] ?? '审核人效').trim() || '审核人效',
+        batch: String(record['批次'] ?? '全部批次').trim() || '全部批次',
+        handledCount,
+        weightedHandledCount: toNumber(record['加权审核量'] ?? record['加权处理量']),
+        firstAuditCount,
+        firstAuditPassCount,
+        precisionPassCount,
+        auditNotPassCount: toNumber(record['未通过量']),
+        proofRefusalCount,
+        ambiguousCount,
+        passRate: toNumber(record['通过率']) || safeRateFromCounts(firstAuditPassCount, firstAuditCount),
+        precisionPassRate: toNumber(record['精准通过率']) || safeRateFromCounts(precisionPassCount, firstAuditCount),
+        proofAccuracy:
+          toNumber(record['举证准确率']) ||
+          safeRateFromCounts(firstAuditCount - ambiguousCount - proofRefusalCount, firstAuditCount),
+        avgHandleMinutes: toNumber(record['平均处理时长']),
+        timeoutCount: toNumber(record['超时次数']),
+      };
+    })
     .filter((row) => row.date && row.employee && Number.isFinite(row.handledCount));
 
   return {
@@ -292,10 +342,7 @@ const parsePropertyCategoryDictionaryFile = async (file: File): Promise<Property
 
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
-    const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      defval: '',
-      raw: false,
-    });
+    const json = sheetToRows(sheet);
 
     if (!json.length) {
       continue;
@@ -359,6 +406,18 @@ const createOptions = (rows: ImportedRow[], key: keyof ImportedRow) =>
     ),
   );
 
+const createDateOptions = (rows: Array<{ date: string }>) =>
+  [ALL_OPTION].concat(
+    [...new Set(rows.map((row) => row.date).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+  );
+
+const createStringOptions = <T,>(rows: T[], pickValue: (row: T) => string) =>
+  [ALL_OPTION].concat(
+    [...new Set(rows.map((row) => pickValue(row).trim()).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b, 'zh-CN'),
+    ),
+  );
+
 const createWeekOptions = (dates: string[]): WeekOption[] => {
   const weeks = new Map<string, WeekOption>();
 
@@ -395,6 +454,35 @@ const filterRowsByCriteria = (rows: ImportedRow[], criteria: FilterCriteria) =>
 
     return startMatch && endMatch && sessionMatch && batchMatch && attributeMatch;
   });
+
+const filterRowsByDateRange = <T extends { date: string }>(
+  rows: T[],
+  startDate: string,
+  endDate: string,
+) =>
+  rows.filter((row) => {
+    const startMatch = startDate === ALL_OPTION || row.date >= startDate;
+    const endMatch = endDate === ALL_OPTION || row.date <= endDate;
+    return startMatch && endMatch;
+  });
+
+const filterEfficiencyRows = (
+  rows: EfficiencyRow[],
+  startDate: string,
+  endDate: string,
+  team: string,
+) =>
+  filterRowsByDateRange(rows, startDate, endDate).filter(
+    (row) => team === ALL_OPTION || row.team === team,
+  );
+
+const resolveWorkplace = (team: string) => {
+  if (team.includes('常州')) return '常州';
+  if (team.includes('上海')) return '上海';
+  if (team.includes('老人') || team.includes('新人')) return '常州';
+  if (team.includes('批')) return '上海';
+  return '其他';
+};
 
 const aggregateMetrics = (rows: ImportedRow[]) => {
   const totals = rows.reduce(
@@ -691,11 +779,29 @@ const aggregateEfficiency = (rows: EfficiencyRow[]) => {
   const totals = rows.reduce(
     (acc, row) => {
       acc.handledCount += row.handledCount;
+      acc.weightedHandledCount += row.weightedHandledCount;
+      acc.firstAuditCount += row.firstAuditCount;
+      acc.firstAuditPassCount += row.firstAuditPassCount;
+      acc.precisionPassCount += row.precisionPassCount;
+      acc.auditNotPassCount += row.auditNotPassCount;
+      acc.proofRefusalCount += row.proofRefusalCount;
+      acc.ambiguousCount += row.ambiguousCount;
       acc.timeoutCount += row.timeoutCount;
       acc.weightedHandleMinutes += row.avgHandleMinutes * row.handledCount;
       return acc;
     },
-    { handledCount: 0, timeoutCount: 0, weightedHandleMinutes: 0 },
+    {
+      handledCount: 0,
+      weightedHandledCount: 0,
+      firstAuditCount: 0,
+      firstAuditPassCount: 0,
+      precisionPassCount: 0,
+      auditNotPassCount: 0,
+      proofRefusalCount: 0,
+      ambiguousCount: 0,
+      timeoutCount: 0,
+      weightedHandleMinutes: 0,
+    },
   );
 
   const employees = new Set(rows.map((row) => row.employee).filter(Boolean));
@@ -707,24 +813,58 @@ const aggregateEfficiency = (rows: EfficiencyRow[]) => {
     teamCount: teams.size,
     avgHandleMinutes: totals.handledCount ? totals.weightedHandleMinutes / totals.handledCount : 0,
     timeoutRate: totals.handledCount ? totals.timeoutCount / totals.handledCount : 0,
+    passRate: safeRateFromCounts(totals.firstAuditPassCount, totals.firstAuditCount),
+    precisionPassRate: safeRateFromCounts(totals.precisionPassCount, totals.firstAuditCount),
+    proofAccuracy: safeRateFromCounts(
+      totals.firstAuditCount - totals.ambiguousCount - totals.proofRefusalCount,
+      totals.firstAuditCount,
+    ),
+    ambiguousRate: safeRateFromCounts(totals.ambiguousCount, totals.firstAuditCount),
+    proofRefusalRate: safeRateFromCounts(totals.proofRefusalCount, totals.firstAuditCount),
   };
 };
 
 const aggregateEfficiencyRanking = (rows: EfficiencyRow[]) =>
   Object.values(
-    rows.reduce<Record<string, { employee: string; team: string; handledCount: number; timeoutCount: number; weightedHandleMinutes: number }>>(
+    rows.reduce<
+      Record<
+        string,
+        {
+          employee: string;
+          team: string;
+          handledCount: number;
+          weightedHandledCount: number;
+          firstAuditCount: number;
+          precisionPassCount: number;
+          proofRefusalCount: number;
+          ambiguousCount: number;
+          timeoutCount: number;
+          weightedHandleMinutes: number;
+        }
+      >
+    >(
       (acc, row) => {
         if (!acc[row.employee]) {
           acc[row.employee] = {
             employee: row.employee,
             team: row.team,
             handledCount: 0,
+            weightedHandledCount: 0,
+            firstAuditCount: 0,
+            precisionPassCount: 0,
+            proofRefusalCount: 0,
+            ambiguousCount: 0,
             timeoutCount: 0,
             weightedHandleMinutes: 0,
           };
         }
 
         acc[row.employee].handledCount += row.handledCount;
+        acc[row.employee].weightedHandledCount += row.weightedHandledCount;
+        acc[row.employee].firstAuditCount += row.firstAuditCount;
+        acc[row.employee].precisionPassCount += row.precisionPassCount;
+        acc[row.employee].proofRefusalCount += row.proofRefusalCount;
+        acc[row.employee].ambiguousCount += row.ambiguousCount;
         acc[row.employee].timeoutCount += row.timeoutCount;
         acc[row.employee].weightedHandleMinutes += row.avgHandleMinutes * row.handledCount;
         return acc;
@@ -736,22 +876,213 @@ const aggregateEfficiencyRanking = (rows: EfficiencyRow[]) =>
       ...item,
       avgHandleMinutes: item.handledCount ? item.weightedHandleMinutes / item.handledCount : 0,
       timeoutRate: item.handledCount ? item.timeoutCount / item.handledCount : 0,
+      precisionPassRate: safeRateFromCounts(item.precisionPassCount, item.firstAuditCount),
+      proofAccuracy: safeRateFromCounts(
+        item.firstAuditCount - item.ambiguousCount - item.proofRefusalCount,
+        item.firstAuditCount,
+      ),
     }))
-    .sort((a, b) => b.handledCount - a.handledCount)
+    .sort((a, b) => b.weightedHandledCount - a.weightedHandledCount)
     .slice(0, 10);
 
 const aggregateEfficiencyTrend = (rows: EfficiencyRow[]) =>
   Object.values(
-    rows.reduce<Record<string, { date: string; handledCount: number; timeoutCount: number }>>((acc, row) => {
+    rows.reduce<
+      Record<
+        string,
+        {
+          date: string;
+          handledCount: number;
+          weightedHandledCount: number;
+          firstAuditCount: number;
+          precisionPassCount: number;
+          proofRefusalCount: number;
+          ambiguousCount: number;
+          timeoutCount: number;
+        }
+      >
+    >((acc, row) => {
       if (!acc[row.date]) {
-        acc[row.date] = { date: row.date, handledCount: 0, timeoutCount: 0 };
+        acc[row.date] = {
+          date: row.date,
+          handledCount: 0,
+          weightedHandledCount: 0,
+          firstAuditCount: 0,
+          precisionPassCount: 0,
+          proofRefusalCount: 0,
+          ambiguousCount: 0,
+          timeoutCount: 0,
+        };
       }
 
       acc[row.date].handledCount += row.handledCount;
+      acc[row.date].weightedHandledCount += row.weightedHandledCount;
+      acc[row.date].firstAuditCount += row.firstAuditCount;
+      acc[row.date].precisionPassCount += row.precisionPassCount;
+      acc[row.date].proofRefusalCount += row.proofRefusalCount;
+      acc[row.date].ambiguousCount += row.ambiguousCount;
       acc[row.date].timeoutCount += row.timeoutCount;
       return acc;
     }, {}),
-  ).sort((a, b) => a.date.localeCompare(b.date));
+  )
+    .map((item) => ({
+      ...item,
+      precisionPassRate: safeRateFromCounts(item.precisionPassCount, item.firstAuditCount),
+      proofAccuracy: safeRateFromCounts(
+        item.firstAuditCount - item.ambiguousCount - item.proofRefusalCount,
+        item.firstAuditCount,
+      ),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+const aggregateWorkplaceEfficiency = (rows: EfficiencyRow[]) =>
+  Object.values(
+    rows.reduce<
+      Record<
+        string,
+        {
+          workplace: string;
+          teams: Set<string>;
+          employees: Set<string>;
+          handledCount: number;
+          weightedHandledCount: number;
+          firstAuditCount: number;
+          precisionPassCount: number;
+          proofRefusalCount: number;
+          ambiguousCount: number;
+        }
+      >
+    >((acc, row) => {
+      const workplace = resolveWorkplace(row.team);
+      if (!acc[workplace]) {
+        acc[workplace] = {
+          workplace,
+          teams: new Set<string>(),
+          employees: new Set<string>(),
+          handledCount: 0,
+          weightedHandledCount: 0,
+          firstAuditCount: 0,
+          precisionPassCount: 0,
+          proofRefusalCount: 0,
+          ambiguousCount: 0,
+        };
+      }
+
+      acc[workplace].teams.add(row.team);
+      acc[workplace].employees.add(row.employee);
+      acc[workplace].handledCount += row.handledCount;
+      acc[workplace].weightedHandledCount += row.weightedHandledCount;
+      acc[workplace].firstAuditCount += row.firstAuditCount;
+      acc[workplace].precisionPassCount += row.precisionPassCount;
+      acc[workplace].proofRefusalCount += row.proofRefusalCount;
+      acc[workplace].ambiguousCount += row.ambiguousCount;
+      return acc;
+    }, {}),
+  )
+    .map((item) => ({
+      ...item,
+      teamCount: item.teams.size,
+      employeeCount: item.employees.size,
+      precisionPassRate: safeRateFromCounts(item.precisionPassCount, item.firstAuditCount),
+      proofAccuracy: safeRateFromCounts(
+        item.firstAuditCount - item.ambiguousCount - item.proofRefusalCount,
+        item.firstAuditCount,
+      ),
+      teams: [...item.teams].filter(Boolean).sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    }))
+    .sort((a, b) => {
+      const order = ['常州', '上海', '其他'];
+      return order.indexOf(a.workplace) - order.indexOf(b.workplace);
+    });
+
+type EfficiencyTimeDimension = 'day' | 'week' | 'month';
+
+const getEfficiencyPeriodLabel = (date: string, dimension: EfficiencyTimeDimension) => {
+  if (dimension === 'month') {
+    return date.slice(0, 7);
+  }
+
+  if (dimension === 'week') {
+    const weekStartDate = startOfWeek(parseISO(date), { weekStartsOn: 0 });
+    const start = format(weekStartDate, 'yyyy-MM-dd');
+    const end = format(addDays(weekStartDate, 6), 'yyyy-MM-dd');
+    return `${start} ~ ${end}`;
+  }
+
+  return date;
+};
+
+const aggregateEmployeeEfficiencyDetail = (
+  rows: EfficiencyRow[],
+  employee: string,
+  dimension: EfficiencyTimeDimension,
+) => {
+  const employeeRows = rows.filter((row) => row.employee === employee);
+  const activeDates = new Set(employeeRows.map((row) => row.date).filter(Boolean));
+  const totals = aggregateEfficiency(employeeRows);
+  const activeDayCount = activeDates.size;
+  const trendRows = Object.values(
+    employeeRows.reduce<
+      Record<
+        string,
+        {
+          period: string;
+          handledCount: number;
+          weightedHandledCount: number;
+          firstAuditCount: number;
+          precisionPassCount: number;
+          proofRefusalCount: number;
+          ambiguousCount: number;
+          activeDates: Set<string>;
+        }
+      >
+    >((acc, row) => {
+      const period = getEfficiencyPeriodLabel(row.date, dimension);
+      if (!acc[period]) {
+        acc[period] = {
+          period,
+          handledCount: 0,
+          weightedHandledCount: 0,
+          firstAuditCount: 0,
+          precisionPassCount: 0,
+          proofRefusalCount: 0,
+          ambiguousCount: 0,
+          activeDates: new Set<string>(),
+        };
+      }
+
+      acc[period].handledCount += row.handledCount;
+      acc[period].weightedHandledCount += row.weightedHandledCount;
+      acc[period].firstAuditCount += row.firstAuditCount;
+      acc[period].precisionPassCount += row.precisionPassCount;
+      acc[period].proofRefusalCount += row.proofRefusalCount;
+      acc[period].ambiguousCount += row.ambiguousCount;
+      acc[period].activeDates.add(row.date);
+      return acc;
+    }, {}),
+  )
+    .map((item) => ({
+      ...item,
+      activeDayCount: item.activeDates.size,
+      dailyHandledAverage: item.activeDates.size ? item.handledCount / item.activeDates.size : 0,
+      dailyWeightedAverage: item.activeDates.size ? item.weightedHandledCount / item.activeDates.size : 0,
+      precisionPassRate: safeRateFromCounts(item.precisionPassCount, item.firstAuditCount),
+      proofAccuracy: safeRateFromCounts(
+        item.firstAuditCount - item.ambiguousCount - item.proofRefusalCount,
+        item.firstAuditCount,
+      ),
+    }))
+    .sort((a, b) => a.period.localeCompare(b.period));
+
+  return {
+    rows: employeeRows,
+    trendRows,
+    totals,
+    activeDayCount,
+    dailyHandledAverage: activeDayCount ? totals.handledCount / activeDayCount : 0,
+    dailyWeightedAverage: activeDayCount ? totals.weightedHandledCount / activeDayCount : 0,
+  };
+};
 
 const aggregateQualityDimension = (
   rows: ImportedRow[],
@@ -1021,11 +1352,17 @@ const downloadEfficiencyTemplate = () => {
       日期: '2026-05-31',
       员工姓名: '张三',
       团队: '预质检一组',
-      场次: '京东寄卖',
-      批次: '第4批',
-      处理单量: 120,
-      平均处理时长: 3.5,
-      超时次数: 4,
+      总审核量: 120,
+      加权审核量: 126.4,
+      一审审核量: 100,
+      一审通过量: 82,
+      通过率: 0.82,
+      精准通过量: 76,
+      精准通过率: 0.76,
+      未通过量: 18,
+      举证拒绝量: 3,
+      模糊通过量: 6,
+      举证准确率: 0.91,
     },
   ];
 
@@ -1160,6 +1497,11 @@ function App() {
   const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [startDateFilter, setStartDateFilter] = useState(ALL_OPTION);
   const [endDateFilter, setEndDateFilter] = useState(ALL_OPTION);
+  const [efficiencyStartDateFilter, setEfficiencyStartDateFilter] = useState(ALL_OPTION);
+  const [efficiencyEndDateFilter, setEfficiencyEndDateFilter] = useState(ALL_OPTION);
+  const [efficiencyTeamFilter, setEfficiencyTeamFilter] = useState(ALL_OPTION);
+  const [efficiencyEmployeeFilter, setEfficiencyEmployeeFilter] = useState(ALL_OPTION);
+  const [efficiencyTimeDimension, setEfficiencyTimeDimension] = useState<EfficiencyTimeDimension>('day');
   const [sessionFilter, setSessionFilter] = useState(ALL_OPTION);
   const [batchFilter, setBatchFilter] = useState(ALL_OPTION);
   const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
@@ -1226,6 +1568,15 @@ function App() {
     [dataset.rows],
   );
   const weekOptions = useMemo(() => createWeekOptions(options.dates), [options.dates]);
+  const efficiencyDateOptions = useMemo(() => createDateOptions(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const efficiencyWeekOptions = useMemo(
+    () => createWeekOptions(efficiencyDateOptions),
+    [efficiencyDateOptions],
+  );
+  const efficiencyTeamOptions = useMemo(
+    () => createStringOptions<EfficiencyRow>(efficiencyDataset.rows, (row) => row.team),
+    [efficiencyDataset.rows],
+  );
 
   const filteredRows = useMemo(
     () =>
@@ -1237,6 +1588,20 @@ function App() {
         attribute: attributeFilter,
       }),
     [attributeFilter, batchFilter, dataset.rows, endDateFilter, sessionFilter, startDateFilter],
+  );
+  const filteredEfficiencyRows = useMemo(
+    () =>
+      filterEfficiencyRows(
+        efficiencyDataset.rows,
+        efficiencyStartDateFilter,
+        efficiencyEndDateFilter,
+        efficiencyTeamFilter,
+      ),
+    [efficiencyDataset.rows, efficiencyEndDateFilter, efficiencyStartDateFilter, efficiencyTeamFilter],
+  );
+  const efficiencyEmployeeOptions = useMemo(
+    () => createStringOptions<EfficiencyRow>(filteredEfficiencyRows, (row) => row.employee),
+    [filteredEfficiencyRows],
   );
 
   const metrics = useMemo(() => aggregateMetrics(filteredRows), [filteredRows]);
@@ -1344,9 +1709,31 @@ function App() {
     () => aggregateDimensionMetrics(filteredRows, 'batch'),
     [filteredRows],
   );
-  const efficiencyMetrics = useMemo(() => aggregateEfficiency(efficiencyDataset.rows), [efficiencyDataset.rows]);
-  const efficiencyRanking = useMemo(() => aggregateEfficiencyRanking(efficiencyDataset.rows), [efficiencyDataset.rows]);
-  const efficiencyTrend = useMemo(() => aggregateEfficiencyTrend(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const efficiencyMetrics = useMemo(() => aggregateEfficiency(filteredEfficiencyRows), [filteredEfficiencyRows]);
+  const efficiencyRanking = useMemo(() => aggregateEfficiencyRanking(filteredEfficiencyRows), [filteredEfficiencyRows]);
+  const efficiencyTrend = useMemo(() => aggregateEfficiencyTrend(filteredEfficiencyRows), [filteredEfficiencyRows]);
+  const workplaceEfficiency = useMemo(
+    () => aggregateWorkplaceEfficiency(filteredEfficiencyRows),
+    [filteredEfficiencyRows],
+  );
+  const selectedEfficiencyEmployee = useMemo(
+    () =>
+      efficiencyEmployeeFilter !== ALL_OPTION
+        ? efficiencyEmployeeFilter
+        : efficiencyEmployeeOptions.find((option) => option !== ALL_OPTION) ?? '',
+    [efficiencyEmployeeFilter, efficiencyEmployeeOptions],
+  );
+  const employeeEfficiencyDetail = useMemo(
+    () =>
+      selectedEfficiencyEmployee
+        ? aggregateEmployeeEfficiencyDetail(
+            filteredEfficiencyRows,
+            selectedEfficiencyEmployee,
+            efficiencyTimeDimension,
+          )
+        : null,
+    [efficiencyTimeDimension, filteredEfficiencyRows, selectedEfficiencyEmployee],
+  );
   const qualityImportHistory = useMemo(
     () => dataset.importHistory?.length ? dataset.importHistory : buildFallbackImportHistory(dataset, 'quality'),
     [dataset],
@@ -1381,7 +1768,7 @@ function App() {
   const aiContext = useMemo(
     () => ({
       qualityRows: filteredRows.length,
-      efficiencyRows: efficiencyDataset.rows.length,
+      efficiencyRows: filteredEfficiencyRows.length,
       dateRange:
         filteredRows.length > 0
           ? `${filteredRows[0].date} ~ ${filteredRows[filteredRows.length - 1].date}`
@@ -1393,7 +1780,7 @@ function App() {
         `属性项=${attributeFilter}`,
       ].join('；'),
     }),
-    [attributeFilter, batchFilter, efficiencyDataset.rows.length, endDateFilter, filteredRows, sessionFilter, startDateFilter],
+    [attributeFilter, batchFilter, endDateFilter, filteredEfficiencyRows.length, filteredRows, sessionFilter, startDateFilter],
   );
   const activeDeepseekModel =
     selectedDeepseekModel === CUSTOM_MODEL_OPTION
@@ -1500,6 +1887,10 @@ function App() {
       const parsed = await parseEfficiencyWorkbookFile(file);
       const nextDataset = await mergeEfficiencyDataset(parsed);
       setEfficiencyDataset(nextDataset);
+      setEfficiencyStartDateFilter(ALL_OPTION);
+      setEfficiencyEndDateFilter(ALL_OPTION);
+      setEfficiencyTeamFilter(ALL_OPTION);
+      setEfficiencyEmployeeFilter(ALL_OPTION);
       setActiveView('efficiency');
     } catch (err) {
       setError(err instanceof Error ? err.message : '人效数据导入失败，请检查文件格式。');
@@ -1514,6 +1905,10 @@ function App() {
       setError('');
       const nextDataset = await clearEfficiencyDataset();
       setEfficiencyDataset(nextDataset);
+      setEfficiencyStartDateFilter(ALL_OPTION);
+      setEfficiencyEndDateFilter(ALL_OPTION);
+      setEfficiencyTeamFilter(ALL_OPTION);
+      setEfficiencyEmployeeFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空人效数据失败。');
     }
@@ -1851,37 +2246,73 @@ function App() {
                       }}
                     />
                   </div>
-                ) : activeView === 'efficiency' || activeView === 'ai' || activeView === 'import' || activeView === 'dictionary' ? (
+                ) : activeView === 'efficiency' ? (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_minmax(170px,0.8fr)_minmax(180px,0.8fr)] xl:items-end">
+                    <DateRangeFilter
+                      label="人效日期区间"
+                      startValue={efficiencyStartDateFilter}
+                      endValue={efficiencyEndDateFilter}
+                      options={efficiencyDateOptions}
+                      onStartChange={setEfficiencyStartDateFilter}
+                      onEndChange={setEfficiencyEndDateFilter}
+                      onClear={() => {
+                        setEfficiencyStartDateFilter(ALL_OPTION);
+                        setEfficiencyEndDateFilter(ALL_OPTION);
+                      }}
+                      compact
+                    />
+                    <WeekQuickSelect
+                      label="人效周区间"
+                      value={getWeekValue(efficiencyStartDateFilter, efficiencyEndDateFilter, efficiencyWeekOptions)}
+                      options={efficiencyWeekOptions}
+                      onChange={(week) => {
+                        setEfficiencyStartDateFilter(week.start);
+                        setEfficiencyEndDateFilter(week.end);
+                      }}
+                      onClear={() => {
+                        setEfficiencyStartDateFilter(ALL_OPTION);
+                        setEfficiencyEndDateFilter(ALL_OPTION);
+                      }}
+                    />
+                    <FilterSelect
+                      label="团队"
+                      icon={<Users size={16} />}
+                      value={efficiencyTeamFilter}
+                      options={efficiencyTeamOptions}
+                      onChange={setEfficiencyTeamFilter}
+                    />
+                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                      <p className="font-medium text-white">当前人效记录</p>
+                      <p className="mt-1 text-xs text-slate-300">
+                        {formatInteger(filteredEfficiencyRows.length)} / {formatInteger(efficiencyDataset.rows.length)} 条
+                      </p>
+                    </div>
+                  </div>
+                ) : activeView === 'ai' || activeView === 'import' || activeView === 'dictionary' ? (
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-slate-200">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="font-medium text-white">
-                          {activeView === 'efficiency'
-                            ? '人效数据独立分析区'
-                            : activeView === 'ai'
-                              ? 'AI 分析准备区'
-                              : activeView === 'import'
-                                ? '数据导入与记录区'
-                                : '属性项分类字典管理区'}
+                          {activeView === 'ai'
+                            ? 'AI 分析准备区'
+                            : activeView === 'import'
+                              ? '数据导入与记录区'
+                              : '属性项分类字典管理区'}
                         </p>
                         <p className="mt-1 text-xs leading-6 text-slate-300">
-                          {activeView === 'efficiency'
-                            ? '人效底表与质量底表分开导入、分开存储，当前版本先提供基础产能、时长与超时概览。'
-                            : activeView === 'ai'
-                              ? 'AI 分析将读取质量数据与人效数据，先沉淀规则化洞察，后续可接入大模型生成周报。'
-                              : activeView === 'import'
-                                ? '质量周数据和人效周数据在这里统一导入，并保留每次导入记录。'
-                                : '底表可不再提供分类，看板会优先依据本地字典为属性项自动归类。'}
+                          {activeView === 'ai'
+                            ? 'AI 分析将读取质量数据与人效数据，先沉淀规则化洞察，后续可接入大模型生成周报。'
+                            : activeView === 'import'
+                              ? '质量周数据和人效周数据在这里统一导入，并保留每次导入记录。'
+                              : '底表可不再提供分类，看板会优先依据本地字典为属性项自动归类。'}
                         </p>
                       </div>
                       <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-200">
-                        {activeView === 'efficiency'
-                          ? `${formatInteger(efficiencyDataset.rows.length)} 条人效记录`
-                          : activeView === 'ai'
-                            ? `${formatInteger(dataset.rows.length)} 条质量 / ${formatInteger(efficiencyDataset.rows.length)} 条人效`
-                            : activeView === 'import'
-                              ? `${formatInteger(allImportHistory.length)} 条导入记录`
-                              : `${formatInteger(propertyCategoryDictionary.length)} 条字典`}
+                        {activeView === 'ai'
+                          ? `${formatInteger(dataset.rows.length)} 条质量 / ${formatInteger(efficiencyDataset.rows.length)} 条人效`
+                          : activeView === 'import'
+                            ? `${formatInteger(allImportHistory.length)} 条导入记录`
+                            : `${formatInteger(propertyCategoryDictionary.length)} 条字典`}
                       </span>
                     </div>
                   </div>
@@ -2201,6 +2632,26 @@ function App() {
                 </div>
 
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="mb-6">
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Quality Rate</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">人效率趋势</h2>
+                    <p className="mt-2 text-sm text-slate-500">用于观察人效口径下的精准通过率与举证准确率是否稳定。</p>
+                  </div>
+                  <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={efficiencyTrend}>
+                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(Number(value) * 100)}%`} />
+                        <Tooltip formatter={(value, name) => [formatPercent(Number(value)), name]} />
+                        <Line type="monotone" dataKey="precisionPassRate" stroke="#1d4ed8" strokeWidth={2.5} dot={false} name="精准通过率" />
+                        <Line type="monotone" dataKey="proofAccuracy" stroke="#0f766e" strokeWidth={2.5} dot={false} name="举证准确率" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6 flex items-end justify-between gap-4">
                     <div>
                     <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Compare</p>
@@ -2447,38 +2898,175 @@ function App() {
           ) : activeView === 'efficiency' ? (
             <>
               <section className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                <StatCard title="处理单量" value={formatInteger(efficiencyMetrics.handledCount)} hint={`${formatInteger(efficiencyDataset.rows.length)} 条人效记录`} tone="slate" icon={<Database size={18} />} />
+                <StatCard title="总审核量" value={formatInteger(efficiencyMetrics.handledCount)} hint={`${formatInteger(filteredEfficiencyRows.length)} 条筛选后记录`} tone="slate" icon={<Database size={18} />} />
                 <StatCard title="覆盖人员" value={formatInteger(efficiencyMetrics.employeeCount)} hint={`覆盖 ${formatInteger(efficiencyMetrics.teamCount)} 个团队`} tone="blue" icon={<Users size={18} />} />
-                <StatCard title="平均处理时长" value={`${efficiencyMetrics.avgHandleMinutes.toFixed(2)} 分钟`} hint="按处理单量加权" tone="emerald" icon={<Target size={18} />} />
-                <StatCard title="超时率" value={formatPercent(efficiencyMetrics.timeoutRate)} hint={`超时 ${formatInteger(efficiencyMetrics.timeoutCount)} 次`} tone="amber" icon={<CircleSlash size={18} />} />
+                <StatCard title="加权审核量" value={efficiencyMetrics.weightedHandledCount.toFixed(1)} hint="按属性复杂度加权" tone="emerald" icon={<Target size={18} />} />
+                <StatCard title="举证准确率" value={formatPercent(efficiencyMetrics.proofAccuracy)} hint={`模糊 ${formatInteger(efficiencyMetrics.ambiguousCount)} / 举证拒绝 ${formatInteger(efficiencyMetrics.proofRefusalCount)}`} tone="amber" icon={<ShieldCheck size={18} />} />
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Workplace Quality</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">职场团队质量对比</h2>
+                    <p className="mt-2 text-sm text-slate-500">常州包含老人、新人；上海包含所有批次。展示举证准确率与精准通过率。</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+                    {formatInteger(workplaceEfficiency.length)} 个职场
+                  </span>
+                </div>
+                {workplaceEfficiency.length ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {workplaceEfficiency.map((item) => (
+                      <div key={item.workplace} className="rounded-3xl border border-slate-100 bg-slate-50/80 p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-display text-2xl text-slate-900">{item.workplace}</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              {formatInteger(item.employeeCount)} 人 · {formatInteger(item.teamCount)} 个团队 · {formatInteger(item.handledCount)} 总审核
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-500">
+                            加权 {item.weightedHandledCount.toFixed(1)}
+                          </span>
+                        </div>
+                        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-2xl bg-white p-4">
+                            <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Proof Accuracy</p>
+                            <p className="mt-2 font-display text-3xl text-emerald-700">{formatPercent(item.proofAccuracy)}</p>
+                            <div className="mt-3 h-2 rounded-full bg-emerald-100">
+                              <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${Math.min(item.proofAccuracy * 100, 100)}%` }} />
+                            </div>
+                            <p className="mt-2 text-xs text-slate-500">举证准确率</p>
+                          </div>
+                          <div className="rounded-2xl bg-white p-4">
+                            <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Precision Pass</p>
+                            <p className="mt-2 font-display text-3xl text-blue-700">{formatPercent(item.precisionPassRate)}</p>
+                            <div className="mt-3 h-2 rounded-full bg-blue-100">
+                              <div className="h-2 rounded-full bg-blue-500" style={{ width: `${Math.min(item.precisionPassRate * 100, 100)}%` }} />
+                            </div>
+                            <p className="mt-2 text-xs text-slate-500">精准通过率</p>
+                          </div>
+                        </div>
+                        <p className="mt-4 line-clamp-2 text-xs leading-5 text-slate-400">
+                          包含团队：{item.teams.join('、') || '未分组'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                    暂无可展示的职场团队数据。
+                  </div>
+                )}
               </section>
 
               <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6">
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Efficiency Trend</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">人效趋势</h2>
-                    <p className="mt-2 text-sm text-slate-500">当前先展示处理单量与超时次数，后续可接入处理时长、返工等更多字段。</p>
+                  <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Employee Efficiency</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">个人审核效率</h2>
+                      <p className="mt-2 text-sm text-slate-500">选择某位员工，查看当前时间范围内的日均值与趋势变化。</p>
+                    </div>
+                    <div className="grid w-full gap-3 md:w-auto md:grid-cols-[220px_160px]">
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-400">员工</span>
+                        <select
+                          value={efficiencyEmployeeFilter}
+                          onChange={(event) => setEfficiencyEmployeeFilter(event.target.value)}
+                          className="dashboard-select h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
+                        >
+                          {efficiencyEmployeeOptions.map((employee) => (
+                            <option key={employee} value={employee}>
+                              {employee === ALL_OPTION ? '自动选择员工' : employee}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-400">时间维度</span>
+                        <select
+                          value={efficiencyTimeDimension}
+                          onChange={(event) => setEfficiencyTimeDimension(event.target.value as EfficiencyTimeDimension)}
+                          className="dashboard-select h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
+                        >
+                          <option value="day">按日</option>
+                          <option value="week">按周</option>
+                          <option value="month">按月</option>
+                        </select>
+                      </label>
+                    </div>
                   </div>
-                  <div className="h-[320px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={efficiencyTrend}>
-                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
-                        <YAxis tickLine={false} axisLine={false} fontSize={12} />
-                        <Tooltip />
-                        <Bar dataKey="handledCount" fill="#1d4ed8" radius={[10, 10, 0, 0]} name="处理单量" />
-                        <Bar dataKey="timeoutCount" fill="#f59e0b" radius={[10, 10, 0, 0]} name="超时次数" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  {employeeEfficiencyDetail && selectedEfficiencyEmployee ? (
+                    <>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="rounded-3xl bg-slate-50 p-5">
+                          <p className="text-sm text-slate-500">当前员工</p>
+                          <p className="mt-2 font-display text-3xl text-slate-900">{selectedEfficiencyEmployee}</p>
+                          <p className="mt-2 text-xs text-slate-400">{formatInteger(employeeEfficiencyDetail.activeDayCount)} 个有审核日期</p>
+                        </div>
+                        <div className="rounded-3xl bg-emerald-50 p-5">
+                          <p className="text-sm text-emerald-700">个人审核效率</p>
+                          <p className="mt-2 font-display text-3xl text-emerald-900">{formatPercent(employeeEfficiencyDetail.totals.precisionPassRate)}</p>
+                          <p className="mt-2 text-xs text-emerald-600">举证准确率 {formatPercent(employeeEfficiencyDetail.totals.proofAccuracy)}</p>
+                        </div>
+                        <div className="rounded-3xl bg-blue-50 p-5">
+                          <p className="text-sm text-blue-700">日均总审核量</p>
+                          <p className="mt-2 font-display text-3xl text-blue-900">{employeeEfficiencyDetail.dailyHandledAverage.toFixed(1)}</p>
+                          <p className="mt-2 text-xs text-blue-600">总计 {formatInteger(employeeEfficiencyDetail.totals.handledCount)}</p>
+                        </div>
+                        <div className="rounded-3xl bg-cyan-50 p-5">
+                          <p className="text-sm text-cyan-700">日均加权审核量</p>
+                          <p className="mt-2 font-display text-3xl text-cyan-900">{employeeEfficiencyDetail.dailyWeightedAverage.toFixed(1)}</p>
+                          <p className="mt-2 text-xs text-cyan-600">总计 {employeeEfficiencyDetail.totals.weightedHandledCount.toFixed(1)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-6 grid gap-6 2xl:grid-cols-2">
+                        <div className="rounded-3xl border border-slate-100 bg-slate-50/70 p-5">
+                          <p className="mb-4 text-sm font-medium text-slate-700">审核量趋势</p>
+                          <div className="h-[280px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={employeeEfficiencyDetail.trendRows}>
+                                <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                                <XAxis dataKey="period" tickLine={false} axisLine={false} fontSize={12} />
+                                <YAxis tickLine={false} axisLine={false} fontSize={12} />
+                                <Tooltip formatter={(value, name) => [Number(value).toLocaleString('zh-CN'), name]} />
+                                <Bar dataKey="dailyHandledAverage" fill="#1d4ed8" radius={[10, 10, 0, 0]} name="日均总审核量" />
+                                <Bar dataKey="dailyWeightedAverage" fill="#06b6d4" radius={[10, 10, 0, 0]} name="日均加权审核量" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                        <div className="rounded-3xl border border-slate-100 bg-slate-50/70 p-5">
+                          <p className="mb-4 text-sm font-medium text-slate-700">质量趋势</p>
+                          <div className="h-[280px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={employeeEfficiencyDetail.trendRows}>
+                                <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                                <XAxis dataKey="period" tickLine={false} axisLine={false} fontSize={12} />
+                                <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(Number(value) * 100)}%`} />
+                                <Tooltip formatter={(value, name) => [formatPercent(Number(value)), name]} />
+                                <Line type="monotone" dataKey="precisionPassRate" stroke="#1d4ed8" strokeWidth={2.5} dot={false} name="精准通过率" />
+                                <Line type="monotone" dataKey="proofAccuracy" stroke="#0f766e" strokeWidth={2.5} dot={false} name="举证准确率" />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                      当前筛选范围内没有可分析的个人数据。
+                    </div>
+                  )}
                 </div>
 
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
                     <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Employee Ranking</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">人员处理量排行</h2>
-                    <p className="mt-2 text-sm text-slate-500">用于先观察人员产能分布，后续可叠加准确率与稳定性。</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">人员加权审核排行</h2>
+                    <p className="mt-2 text-sm text-slate-500">按加权审核量排序，并展示个人精准通过率与举证准确率。</p>
                   </div>
                   <div className="space-y-3">
                     {efficiencyRanking.length ? (
@@ -2489,11 +3077,13 @@ function App() {
                               <p className="truncate font-medium text-slate-900">
                                 {index + 1}. {item.employee}
                               </p>
-                              <p className="mt-1 text-xs text-slate-500">{item.team || '未分组'} · 平均 {item.avgHandleMinutes.toFixed(2)} 分钟</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {item.team || '未分组'} · 精准 {formatPercent(item.precisionPassRate)} · 举证 {formatPercent(item.proofAccuracy)}
+                              </p>
                             </div>
                             <div className="text-right">
-                              <p className="font-display text-xl font-semibold text-slate-900">{formatInteger(item.handledCount)}</p>
-                              <p className="text-xs text-slate-500">超时率 {formatPercent(item.timeoutRate)}</p>
+                              <p className="font-display text-xl font-semibold text-slate-900">{item.weightedHandledCount.toFixed(1)}</p>
+                              <p className="text-xs text-slate-500">总审核 {formatInteger(item.handledCount)}</p>
                             </div>
                           </div>
                         </div>
@@ -2506,6 +3096,7 @@ function App() {
                   </div>
                 </div>
               </section>
+
             </>
           ) : activeView === 'import' ? (
             <>
@@ -2528,7 +3119,7 @@ function App() {
                 />
                 <ImportDatasetCard
                   title="人效周数据"
-                  description="独立用于人效分析。当前字段包含日期、员工、团队、场次、批次、处理单量、平均处理时长、超时次数。"
+                  description="独立用于人效分析。支持新版审核人效字段：总审核量、加权审核量、一审审核量、精准通过量、举证拒绝量、模糊通过量等。"
                   icon={<Users size={22} />}
                   tone="blue"
                   isImporting={isEfficiencyImporting}

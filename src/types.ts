@@ -28,6 +28,16 @@ export interface EfficiencyRow {
   session: string;
   batch: string;
   handledCount: number;
+  weightedHandledCount: number;
+  firstAuditCount: number;
+  firstAuditPassCount: number;
+  precisionPassCount: number;
+  auditNotPassCount: number;
+  proofRefusalCount: number;
+  ambiguousCount: number;
+  passRate: number;
+  precisionPassRate: number;
+  proofAccuracy: number;
   avgHandleMinutes: number;
   timeoutCount: number;
 }

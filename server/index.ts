@@ -33,6 +33,16 @@ type EfficiencyRow = {
   session: string;
   batch: string;
   handledCount: number;
+  weightedHandledCount?: number;
+  firstAuditCount?: number;
+  firstAuditPassCount?: number;
+  precisionPassCount?: number;
+  auditNotPassCount?: number;
+  proofRefusalCount?: number;
+  ambiguousCount?: number;
+  passRate?: number;
+  precisionPassRate?: number;
+  proofAccuracy?: number;
   avgHandleMinutes: number;
   timeoutCount: number;
 };
@@ -143,6 +153,13 @@ const buildEfficiencyRowKey = (row: EfficiencyRow) =>
     row.session,
     row.batch,
     row.handledCount,
+    row.weightedHandledCount,
+    row.firstAuditCount,
+    row.firstAuditPassCount,
+    row.precisionPassCount,
+    row.auditNotPassCount,
+    row.proofRefusalCount,
+    row.ambiguousCount,
     row.avgHandleMinutes,
     row.timeoutCount,
   ].join('::');
