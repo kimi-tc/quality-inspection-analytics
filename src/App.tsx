@@ -441,6 +441,19 @@ const createWeekOptions = (dates: string[]): WeekOption[] => {
   return [...weeks.values()].sort((a, b) => b.start.localeCompare(a.start));
 };
 
+const getDateCoverage = (rows: Array<{ date: string }>) => {
+  const dates = rows
+    .map((row) => row.date)
+    .filter((date) => date && date !== ALL_OPTION)
+    .sort((a, b) => a.localeCompare(b));
+
+  return {
+    start: dates[0] ?? '',
+    end: dates[dates.length - 1] ?? '',
+    count: dates.length,
+  };
+};
+
 const getWeekValue = (startDate: string, endDate: string, weeks: WeekOption[]) =>
   weeks.find((week) => week.start === startDate && week.end === endDate)?.value ?? ALL_OPTION;
 
@@ -1577,6 +1590,16 @@ function App() {
     () => createStringOptions<EfficiencyRow>(efficiencyDataset.rows, (row) => row.team),
     [efficiencyDataset.rows],
   );
+  const qualityCoverage = useMemo(() => getDateCoverage(dataset.rows), [dataset.rows]);
+  const efficiencyCoverage = useMemo(() => getDateCoverage(efficiencyDataset.rows), [efficiencyDataset.rows]);
+  const latestDataDate = useMemo(
+    () => [qualityCoverage.end, efficiencyCoverage.end].filter(Boolean).sort((a, b) => b.localeCompare(a))[0] ?? '',
+    [efficiencyCoverage.end, qualityCoverage.end],
+  );
+  const overallCoverage = useMemo(
+    () => getDateCoverage([...dataset.rows, ...efficiencyDataset.rows]),
+    [dataset.rows, efficiencyDataset.rows],
+  );
 
   const filteredRows = useMemo(
     () =>
@@ -2191,6 +2214,28 @@ function App() {
                     </div>
                     <p className="mt-1 text-sm text-slate-500">
                       聚焦举证准确率、精准通过率、模棱两可率与拒绝率，按场次、批次、属性项动态拆解。
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px]">
+                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-4 py-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                      <CalendarDays size={14} />
+                      最新数据
+                    </div>
+                    <p className="mt-1 font-display text-xl font-semibold text-slate-950">
+                      {latestDataDate || '暂无数据'}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">可查询区间</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-800">
+                      {overallCoverage.start && overallCoverage.end
+                        ? `${overallCoverage.start} ~ ${overallCoverage.end}`
+                        : '暂无可查询数据'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      质量 {qualityCoverage.end || '-'} / 人效 {efficiencyCoverage.end || '-'}
                     </p>
                   </div>
                 </div>
