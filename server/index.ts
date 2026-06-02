@@ -152,16 +152,6 @@ const buildEfficiencyRowKey = (row: EfficiencyRow) =>
     row.team,
     row.session,
     row.batch,
-    row.handledCount,
-    row.weightedHandledCount,
-    row.firstAuditCount,
-    row.firstAuditPassCount,
-    row.precisionPassCount,
-    row.auditNotPassCount,
-    row.proofRefusalCount,
-    row.ambiguousCount,
-    row.avgHandleMinutes,
-    row.timeoutCount,
   ].join('::');
 
 const mergeRows = (existingRows: ImportedRow[], incomingRows: ImportedRow[]) => {
@@ -261,7 +251,10 @@ const readEfficiencyDataset = async (): Promise<EfficiencyDataset> => {
     if (!Array.isArray(parsed.rows)) {
       return emptyEfficiencyDataset;
     }
-    return parsed;
+    return {
+      ...parsed,
+      rows: mergeEfficiencyRows([], parsed.rows),
+    };
   } catch {
     return emptyEfficiencyDataset;
   }
