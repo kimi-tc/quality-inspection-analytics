@@ -5,7 +5,7 @@ PROJECT_DIR="${PROJECT_DIR:-$HOME/quality-inspection-analytics}"
 PORT="${PORT:-3000}"
 DATA_DIR="${DATA_DIR:-$PROJECT_DIR/data}"
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/opt/anaconda3/bin:/Users/tangchao144522/miniconda3/bin:$PATH"
+export PATH="/Users/a144522/.nvm/versions/node/v25.9.0/bin:/opt/homebrew/bin:/usr/local/bin:/opt/anaconda3/bin:/Users/tangchao144522/miniconda3/bin:$PATH"
 
 NPM_BIN="$(command -v npm || true)"
 

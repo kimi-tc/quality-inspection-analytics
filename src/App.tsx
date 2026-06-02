@@ -98,6 +98,14 @@ const REQUIRED_AUDIT_EFFICIENCY_HEADERS = [
 const ALL_OPTION = '全部';
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
 const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
+const CATEGORY_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
+const SESSION_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#6366f1', '#f43f5e', '#64748b', '#84cc16', '#a855f7'];
+const COMPARE_DIMENSION_LABELS: Record<CompareDimension, string> = {
+  session: '场次',
+  batch: '批次',
+  category: '属性项分类',
+  attribute: '属性项',
+};
 const DEEPSEEK_MODEL_OPTIONS = [
   'deepseek-chat',
   'deepseek-reasoner',
@@ -392,6 +400,8 @@ type FilterCriteria = {
   attribute: string;
 };
 
+type CompareDimension = 'session' | 'batch' | 'category' | 'attribute';
+
 type WeekOption = {
   value: string;
   label: string;
@@ -589,6 +599,27 @@ const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: Pr
       };
     })
     .sort((a, b) => b.value - a.value);
+
+const aggregateSessionShares = (rows: ImportedRow[]) =>
+  Object.values(
+    rows.reduce<Record<string, { name: string; declarations: number }>>((acc, row) => {
+      const key = row.session || '未识别场次';
+      if (!acc[key]) {
+        acc[key] = { name: key, declarations: 0 };
+      }
+
+      acc[key].declarations += row.declarations;
+      return acc;
+    }, {}),
+  )
+    .map((item, _, allItems) => {
+      const total = allItems.reduce((sum, current) => sum + current.declarations, 0);
+      return {
+        ...item,
+        value: total ? item.declarations / total : 0,
+      };
+    })
+    .sort((a, b) => b.declarations - a.declarations);
 
 const aggregateCompareTrend = (leftRows: ImportedRow[], rightRows: ImportedRow[], leftLabel: string, rightLabel: string) => {
   const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
@@ -1508,23 +1539,26 @@ function App() {
   const [dictionaryDraft, setDictionaryDraft] = useState<PropertyCategoryEntry>({ propertyName: '', category: '' });
   const [editingDictionaryKey, setEditingDictionaryKey] = useState('');
   const [activeView, setActiveView] = useState<ViewKey>('overview');
-  const [startDateFilter, setStartDateFilter] = useState(ALL_OPTION);
-  const [endDateFilter, setEndDateFilter] = useState(ALL_OPTION);
+  const [overviewStartDateFilter, setOverviewStartDateFilter] = useState(ALL_OPTION);
+  const [overviewEndDateFilter, setOverviewEndDateFilter] = useState(ALL_OPTION);
+  const [overviewSessionFilter, setOverviewSessionFilter] = useState(ALL_OPTION);
+  const [overviewBatchFilter, setOverviewBatchFilter] = useState(ALL_OPTION);
+  const [attributeStartDateFilter, setAttributeStartDateFilter] = useState(ALL_OPTION);
+  const [attributeEndDateFilter, setAttributeEndDateFilter] = useState(ALL_OPTION);
+  const [attributeSessionFilter, setAttributeSessionFilter] = useState(ALL_OPTION);
+  const [attributeBatchFilter, setAttributeBatchFilter] = useState(ALL_OPTION);
+  const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
+  const [compareStartDateFilter, setCompareStartDateFilter] = useState(ALL_OPTION);
+  const [compareEndDateFilter, setCompareEndDateFilter] = useState(ALL_OPTION);
+  const [compareDimension, setCompareDimension] = useState<CompareDimension>('session');
+  const [compareSessionFilter, setCompareSessionFilter] = useState(ALL_OPTION);
+  const [compareBatchFilter, setCompareBatchFilter] = useState(ALL_OPTION);
+  const [compareAttributeFilter, setCompareAttributeFilter] = useState(ALL_OPTION);
   const [efficiencyStartDateFilter, setEfficiencyStartDateFilter] = useState(ALL_OPTION);
   const [efficiencyEndDateFilter, setEfficiencyEndDateFilter] = useState(ALL_OPTION);
   const [efficiencyTeamFilter, setEfficiencyTeamFilter] = useState(ALL_OPTION);
   const [efficiencyEmployeeFilter, setEfficiencyEmployeeFilter] = useState(ALL_OPTION);
   const [efficiencyTimeDimension, setEfficiencyTimeDimension] = useState<EfficiencyTimeDimension>('day');
-  const [sessionFilter, setSessionFilter] = useState(ALL_OPTION);
-  const [batchFilter, setBatchFilter] = useState(ALL_OPTION);
-  const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
-  const [compareLeftStart, setCompareLeftStart] = useState(ALL_OPTION);
-  const [compareLeftEnd, setCompareLeftEnd] = useState(ALL_OPTION);
-  const [compareRightStart, setCompareRightStart] = useState(ALL_OPTION);
-  const [compareRightEnd, setCompareRightEnd] = useState(ALL_OPTION);
-  const [compareSessionSelection, setCompareSessionSelection] = useState(ALL_OPTION);
-  const [compareBatchFirstSelection, setCompareBatchFirstSelection] = useState(ALL_OPTION);
-  const [compareBatchSecondSelection, setCompareBatchSecondSelection] = useState(ALL_OPTION);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [isEfficiencyImporting, setIsEfficiencyImporting] = useState(false);
@@ -1601,16 +1635,38 @@ function App() {
     [dataset.rows, efficiencyDataset.rows],
   );
 
-  const filteredRows = useMemo(
+  const overviewFilteredRows = useMemo(
     () =>
       filterRowsByCriteria(dataset.rows, {
-        startDate: startDateFilter,
-        endDate: endDateFilter,
-        session: sessionFilter,
-        batch: batchFilter,
+        startDate: overviewStartDateFilter,
+        endDate: overviewEndDateFilter,
+        session: overviewSessionFilter,
+        batch: overviewBatchFilter,
+        attribute: ALL_OPTION,
+      }),
+    [dataset.rows, overviewBatchFilter, overviewEndDateFilter, overviewSessionFilter, overviewStartDateFilter],
+  );
+  const attributeFilteredRows = useMemo(
+    () =>
+      filterRowsByCriteria(dataset.rows, {
+        startDate: attributeStartDateFilter,
+        endDate: attributeEndDateFilter,
+        session: attributeSessionFilter,
+        batch: attributeBatchFilter,
         attribute: attributeFilter,
       }),
-    [attributeFilter, batchFilter, dataset.rows, endDateFilter, sessionFilter, startDateFilter],
+    [
+      attributeBatchFilter,
+      attributeEndDateFilter,
+      attributeFilter,
+      attributeSessionFilter,
+      attributeStartDateFilter,
+      dataset.rows,
+    ],
+  );
+  const filteredRows = useMemo(
+    () => (activeView === 'attribute' ? attributeFilteredRows : overviewFilteredRows),
+    [activeView, attributeFilteredRows, overviewFilteredRows],
   );
   const filteredEfficiencyRows = useMemo(
     () =>
@@ -1634,96 +1690,30 @@ function App() {
     () => aggregateCategories(filteredRows, propertyCategoryDictionary),
     [filteredRows, propertyCategoryDictionary],
   );
-  const compareLeftRows = useMemo(
+  const sessionShareData = useMemo(() => aggregateSessionShares(filteredRows), [filteredRows]);
+  const compareFilteredRows = useMemo(
     () =>
       filterRowsByCriteria(dataset.rows, {
-        startDate: compareLeftStart,
-        endDate: compareLeftEnd,
-        session: sessionFilter,
-        batch: batchFilter,
-        attribute: attributeFilter,
+        startDate: compareStartDateFilter,
+        endDate: compareEndDateFilter,
+        session: compareSessionFilter,
+        batch: compareBatchFilter,
+        attribute: compareAttributeFilter,
       }),
-    [attributeFilter, batchFilter, compareLeftEnd, compareLeftStart, dataset.rows, sessionFilter],
+    [
+      compareAttributeFilter,
+      compareBatchFilter,
+      compareEndDateFilter,
+      compareSessionFilter,
+      compareStartDateFilter,
+      dataset.rows,
+    ],
   );
-  const compareRightRows = useMemo(
-    () =>
-      filterRowsByCriteria(dataset.rows, {
-        startDate: compareRightStart,
-        endDate: compareRightEnd,
-        session: sessionFilter,
-        batch: batchFilter,
-        attribute: attributeFilter,
-      }),
-    [attributeFilter, batchFilter, compareRightEnd, compareRightStart, dataset.rows, sessionFilter],
+  const compareMetrics = useMemo(() => aggregateMetrics(compareFilteredRows), [compareFilteredRows]);
+  const compareDimensionRows = useMemo(
+    () => aggregateQualityDimension(compareFilteredRows, compareDimension, propertyCategoryDictionary).slice(0, 12),
+    [compareDimension, compareFilteredRows, propertyCategoryDictionary],
   );
-  const compareLeftMetrics = useMemo(() => aggregateMetrics(compareLeftRows), [compareLeftRows]);
-  const compareRightMetrics = useMemo(() => aggregateMetrics(compareRightRows), [compareRightRows]);
-  const compareTrend = useMemo(
-    () =>
-      aggregateCompareTrend(
-        compareLeftRows,
-        compareRightRows,
-        `${formatDateDisplay(compareLeftStart) || '区间A'} → ${formatDateDisplay(compareLeftEnd) || '未选'}`,
-        `${formatDateDisplay(compareRightStart) || '区间B'} → ${formatDateDisplay(compareRightEnd) || '未选'}`,
-      ),
-    [compareLeftEnd, compareLeftRows, compareLeftStart, compareRightEnd, compareRightRows, compareRightStart],
-  );
-  const compareSessionRows = useMemo(
-    () => aggregateSessionComparison(compareLeftRows, compareRightRows),
-    [compareLeftRows, compareRightRows],
-  );
-  const compareBatchRows = useMemo(
-    () => aggregateBatchComparison(compareLeftRows, compareRightRows),
-    [compareLeftRows, compareRightRows],
-  );
-  const compareSessionOptions = useMemo(
-    () => [ALL_OPTION, ...compareSessionRows.map((item) => item.session)],
-    [compareSessionRows],
-  );
-  const compareBatchOptions = useMemo(
-    () => [ALL_OPTION, ...compareBatchRows.map((item) => item.batch)],
-    [compareBatchRows],
-  );
-  const compareSelectedSession = useMemo(
-    () =>
-      compareSessionRows.find((item) => item.session === compareSessionSelection) ??
-      compareSessionRows[0] ??
-      null,
-    [compareSessionRows, compareSessionSelection],
-  );
-  const compareSelectedBatchFirst = useMemo(
-    () =>
-      compareBatchRows.find((item) => item.batch === compareBatchFirstSelection) ??
-      compareBatchRows[0] ??
-      null,
-    [compareBatchFirstSelection, compareBatchRows],
-  );
-  const compareSelectedBatchSecond = useMemo(
-    () =>
-      compareBatchRows.find((item) => item.batch === compareBatchSecondSelection) ??
-      compareBatchRows.find((item) => item.batch !== (compareBatchFirstSelection === ALL_OPTION ? compareBatchRows[0]?.batch : compareBatchFirstSelection)) ??
-      compareBatchRows[1] ??
-      null,
-    [compareBatchFirstSelection, compareBatchRows, compareBatchSecondSelection],
-  );
-  const compareBatchChartData = useMemo(() => {
-    if (!compareSelectedBatchFirst || !compareSelectedBatchSecond) {
-      return [];
-    }
-
-    return [
-      {
-        metric: '区间A',
-        [compareSelectedBatchFirst.batch]: compareSelectedBatchFirst.leftProofAccuracy,
-        [compareSelectedBatchSecond.batch]: compareSelectedBatchSecond.leftProofAccuracy,
-      },
-      {
-        metric: '区间B',
-        [compareSelectedBatchFirst.batch]: compareSelectedBatchFirst.rightProofAccuracy,
-        [compareSelectedBatchSecond.batch]: compareSelectedBatchSecond.rightProofAccuracy,
-      },
-    ];
-  }, [compareSelectedBatchFirst, compareSelectedBatchSecond]);
   const attributeSessionRows = useMemo(
     () => aggregateDimensionMetrics(filteredRows, 'session'),
     [filteredRows],
@@ -1797,13 +1787,19 @@ function App() {
           ? `${filteredRows[0].date} ~ ${filteredRows[filteredRows.length - 1].date}`
           : '暂无质量数据',
       filters: [
-        `日期=${formatDateDisplay(startDateFilter) || '全部'}~${formatDateDisplay(endDateFilter) || '全部'}`,
-        `场次=${sessionFilter}`,
-        `批次=${batchFilter}`,
-        `属性项=${attributeFilter}`,
+        `日期=${formatDateDisplay(overviewStartDateFilter) || '全部'}~${formatDateDisplay(overviewEndDateFilter) || '全部'}`,
+        `场次=${overviewSessionFilter}`,
+        `批次=${overviewBatchFilter}`,
       ].join('；'),
     }),
-    [attributeFilter, batchFilter, endDateFilter, filteredEfficiencyRows.length, filteredRows, sessionFilter, startDateFilter],
+    [
+      filteredEfficiencyRows.length,
+      filteredRows,
+      overviewBatchFilter,
+      overviewEndDateFilter,
+      overviewSessionFilter,
+      overviewStartDateFilter,
+    ],
   );
   const activeDeepseekModel =
     selectedDeepseekModel === CUSTOM_MODEL_OPTION
@@ -1861,15 +1857,21 @@ function App() {
       const parsed = await parseWorkbookFile(file, propertyCategoryDictionary);
       const nextDataset = await mergeSharedDataset(parsed);
       setDataset(nextDataset);
-      setStartDateFilter(ALL_OPTION);
-      setEndDateFilter(ALL_OPTION);
-      setCompareLeftStart(ALL_OPTION);
-      setCompareLeftEnd(ALL_OPTION);
-      setCompareRightStart(ALL_OPTION);
-      setCompareRightEnd(ALL_OPTION);
-      setSessionFilter(ALL_OPTION);
-      setBatchFilter(ALL_OPTION);
+      setOverviewStartDateFilter(ALL_OPTION);
+      setOverviewEndDateFilter(ALL_OPTION);
+      setOverviewSessionFilter(ALL_OPTION);
+      setOverviewBatchFilter(ALL_OPTION);
+      setAttributeStartDateFilter(ALL_OPTION);
+      setAttributeEndDateFilter(ALL_OPTION);
+      setAttributeSessionFilter(ALL_OPTION);
+      setAttributeBatchFilter(ALL_OPTION);
       setAttributeFilter(ALL_OPTION);
+      setCompareStartDateFilter(ALL_OPTION);
+      setCompareEndDateFilter(ALL_OPTION);
+      setCompareDimension('session');
+      setCompareSessionFilter(ALL_OPTION);
+      setCompareBatchFilter(ALL_OPTION);
+      setCompareAttributeFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '导入失败，请检查文件格式。');
     } finally {
@@ -1883,15 +1885,21 @@ function App() {
       setError('');
       const nextDataset = await clearSharedDataset();
       setDataset(nextDataset);
-      setStartDateFilter(ALL_OPTION);
-      setEndDateFilter(ALL_OPTION);
-      setCompareLeftStart(ALL_OPTION);
-      setCompareLeftEnd(ALL_OPTION);
-      setCompareRightStart(ALL_OPTION);
-      setCompareRightEnd(ALL_OPTION);
-      setSessionFilter(ALL_OPTION);
-      setBatchFilter(ALL_OPTION);
+      setOverviewStartDateFilter(ALL_OPTION);
+      setOverviewEndDateFilter(ALL_OPTION);
+      setOverviewSessionFilter(ALL_OPTION);
+      setOverviewBatchFilter(ALL_OPTION);
+      setAttributeStartDateFilter(ALL_OPTION);
+      setAttributeEndDateFilter(ALL_OPTION);
+      setAttributeSessionFilter(ALL_OPTION);
+      setAttributeBatchFilter(ALL_OPTION);
       setAttributeFilter(ALL_OPTION);
+      setCompareStartDateFilter(ALL_OPTION);
+      setCompareEndDateFilter(ALL_OPTION);
+      setCompareDimension('session');
+      setCompareSessionFilter(ALL_OPTION);
+      setCompareBatchFilter(ALL_OPTION);
+      setCompareAttributeFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空共享数据失败。');
     }
@@ -2045,80 +2053,40 @@ function App() {
   const compareCards = [
     {
       title: '申报次数',
-      leftValue: compareLeftMetrics.declarations,
-      rightValue: compareRightMetrics.declarations,
-      formatter: formatInteger,
+      value: formatInteger(compareMetrics.declarations),
+      hint: `${formatInteger(compareFilteredRows.length)} 条筛选后记录`,
+      tone: 'slate' as const,
+      icon: <Database size={18} />,
     },
     {
       title: '举证准确率',
-      leftValue: compareLeftMetrics.proofAccuracy,
-      rightValue: compareRightMetrics.proofAccuracy,
-      formatter: formatPercent,
+      value: formatPercent(compareMetrics.proofAccuracy),
+      hint: '当前周期整体',
+      tone: 'emerald' as const,
+      icon: <ShieldCheck size={18} />,
     },
     {
       title: '精准通过率',
-      leftValue: compareLeftMetrics.exactPassRate,
-      rightValue: compareRightMetrics.exactPassRate,
-      formatter: formatPercent,
+      value: formatPercent(compareMetrics.exactPassRate),
+      hint: '当前周期整体',
+      tone: 'blue' as const,
+      icon: <Target size={18} />,
     },
     {
       title: '模棱两可率',
-      leftValue: compareLeftMetrics.ambiguousRate,
-      rightValue: compareRightMetrics.ambiguousRate,
-      formatter: formatPercent,
+      value: formatPercent(compareMetrics.ambiguousRate),
+      hint: `模糊通过 ${formatInteger(compareMetrics.ambiguousPasses)}`,
+      tone: 'amber' as const,
+      icon: <CircleSlash size={18} />,
     },
     {
       title: '拒绝率',
-      leftValue: compareLeftMetrics.rejectRate,
-      rightValue: compareRightMetrics.rejectRate,
-      formatter: formatPercent,
+      value: formatPercent(compareMetrics.rejectRate),
+      hint: `未通过 ${formatInteger(compareMetrics.rejects)}`,
+      tone: 'rose' as const,
+      icon: <Ban size={18} />,
     },
   ];
-
-  const compareModeReady =
-    compareLeftStart !== ALL_OPTION &&
-    compareLeftEnd !== ALL_OPTION &&
-    compareRightStart !== ALL_OPTION &&
-    compareRightEnd !== ALL_OPTION;
-
-  useEffect(() => {
-    if (!compareSessionRows.length) {
-      setCompareSessionSelection(ALL_OPTION);
-      return;
-    }
-
-    if (
-      compareSessionSelection === ALL_OPTION ||
-      !compareSessionRows.some((item) => item.session === compareSessionSelection)
-    ) {
-      setCompareSessionSelection(compareSessionRows[0].session);
-    }
-  }, [compareSessionRows, compareSessionSelection]);
-
-  useEffect(() => {
-    if (!compareBatchRows.length) {
-      setCompareBatchFirstSelection(ALL_OPTION);
-      setCompareBatchSecondSelection(ALL_OPTION);
-      return;
-    }
-
-    const batchNames = compareBatchRows.map((item) => item.batch);
-
-    if (
-      compareBatchFirstSelection === ALL_OPTION ||
-      !batchNames.includes(compareBatchFirstSelection)
-    ) {
-      setCompareBatchFirstSelection(batchNames[0]);
-    }
-
-    if (
-      compareBatchSecondSelection === ALL_OPTION ||
-      !batchNames.includes(compareBatchSecondSelection) ||
-      compareBatchSecondSelection === compareBatchFirstSelection
-    ) {
-      setCompareBatchSecondSelection(batchNames.find((item) => item !== batchNames[0]) ?? batchNames[0]);
-    }
-  }, [compareBatchFirstSelection, compareBatchRows, compareBatchSecondSelection]);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f6efe4_0%,_#f3f8f6_40%,_#eef2ff_100%)] text-slate-900">
@@ -2251,45 +2219,50 @@ function App() {
             <div className="mt-4 rounded-[28px] bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] p-4 text-white">
               <div className="flex flex-col gap-4">
                 {activeView === 'compare' ? (
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    <ComparePeriodPanel
-                      title="区间 A"
-                      tone="emerald"
-                      startValue={compareLeftStart}
-                      endValue={compareLeftEnd}
-                      dateOptions={options.dates}
-                      weekValue={getWeekValue(compareLeftStart, compareLeftEnd, weekOptions)}
-                      weekOptions={weekOptions}
-                      onStartChange={setCompareLeftStart}
-                      onEndChange={setCompareLeftEnd}
-                      onWeekChange={(week) => {
-                        setCompareLeftStart(week.start);
-                        setCompareLeftEnd(week.end);
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_minmax(190px,0.9fr)] xl:items-end">
+                    <DateRangeFilter
+                      label="对比日期区间"
+                      startValue={compareStartDateFilter}
+                      endValue={compareEndDateFilter}
+                      options={options.dates}
+                      onStartChange={setCompareStartDateFilter}
+                      onEndChange={setCompareEndDateFilter}
+                      onClear={() => {
+                        setCompareStartDateFilter(ALL_OPTION);
+                        setCompareEndDateFilter(ALL_OPTION);
+                      }}
+                      compact
+                    />
+                    <WeekQuickSelect
+                      label="对比周区间"
+                      value={getWeekValue(compareStartDateFilter, compareEndDateFilter, weekOptions)}
+                      options={weekOptions}
+                      onChange={(week) => {
+                        setCompareStartDateFilter(week.start);
+                        setCompareEndDateFilter(week.end);
                       }}
                       onClear={() => {
-                        setCompareLeftStart(ALL_OPTION);
-                        setCompareLeftEnd(ALL_OPTION);
+                        setCompareStartDateFilter(ALL_OPTION);
+                        setCompareEndDateFilter(ALL_OPTION);
                       }}
                     />
-                    <ComparePeriodPanel
-                      title="区间 B"
-                      tone="blue"
-                      startValue={compareRightStart}
-                      endValue={compareRightEnd}
-                      dateOptions={options.dates}
-                      weekValue={getWeekValue(compareRightStart, compareRightEnd, weekOptions)}
-                      weekOptions={weekOptions}
-                      onStartChange={setCompareRightStart}
-                      onEndChange={setCompareRightEnd}
-                      onWeekChange={(week) => {
-                        setCompareRightStart(week.start);
-                        setCompareRightEnd(week.end);
-                      }}
-                      onClear={() => {
-                        setCompareRightStart(ALL_OPTION);
-                        setCompareRightEnd(ALL_OPTION);
-                      }}
-                    />
+                    <label className="block">
+                      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+                        <GitCompareArrows size={16} />
+                        对比维度
+                      </span>
+                      <select
+                        value={compareDimension}
+                        onChange={(event) => setCompareDimension(event.target.value as CompareDimension)}
+                        className="dashboard-select w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
+                      >
+                        {(Object.keys(COMPARE_DIMENSION_LABELS) as CompareDimension[]).map((dimension) => (
+                          <option key={dimension} value={dimension}>
+                            {COMPARE_DIMENSION_LABELS[dimension]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   </div>
                 ) : activeView === 'efficiency' ? (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_minmax(170px,0.8fr)_minmax(180px,0.8fr)] xl:items-end">
@@ -2361,47 +2334,47 @@ function App() {
                       </span>
                     </div>
                   </div>
-                ) : (
+                ) : activeView === 'attribute' ? (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(3,minmax(150px,1fr))] xl:items-end">
                     <DateRangeFilter
                       label="日期区间"
-                      startValue={startDateFilter}
-                      endValue={endDateFilter}
+                      startValue={attributeStartDateFilter}
+                      endValue={attributeEndDateFilter}
                       options={options.dates}
-                      onStartChange={setStartDateFilter}
-                      onEndChange={setEndDateFilter}
+                      onStartChange={setAttributeStartDateFilter}
+                      onEndChange={setAttributeEndDateFilter}
                       onClear={() => {
-                        setStartDateFilter(ALL_OPTION);
-                        setEndDateFilter(ALL_OPTION);
+                        setAttributeStartDateFilter(ALL_OPTION);
+                        setAttributeEndDateFilter(ALL_OPTION);
                       }}
                       compact
                     />
                     <WeekQuickSelect
                       label="周区间"
-                      value={getWeekValue(startDateFilter, endDateFilter, weekOptions)}
+                      value={getWeekValue(attributeStartDateFilter, attributeEndDateFilter, weekOptions)}
                       options={weekOptions}
                       onChange={(week) => {
-                        setStartDateFilter(week.start);
-                        setEndDateFilter(week.end);
+                        setAttributeStartDateFilter(week.start);
+                        setAttributeEndDateFilter(week.end);
                       }}
                       onClear={() => {
-                        setStartDateFilter(ALL_OPTION);
-                        setEndDateFilter(ALL_OPTION);
+                        setAttributeStartDateFilter(ALL_OPTION);
+                        setAttributeEndDateFilter(ALL_OPTION);
                       }}
                     />
                     <FilterSelect
                       label="场次"
                       icon={<Layers3 size={16} />}
-                      value={sessionFilter}
+                      value={attributeSessionFilter}
                       options={options.sessions}
-                      onChange={setSessionFilter}
+                      onChange={setAttributeSessionFilter}
                     />
                     <FilterSelect
                       label="批次"
                       icon={<Boxes size={16} />}
-                      value={batchFilter}
+                      value={attributeBatchFilter}
                       options={options.batches}
-                      onChange={setBatchFilter}
+                      onChange={setAttributeBatchFilter}
                     />
                     <FilterSelect
                       label="属性项"
@@ -2411,29 +2384,72 @@ function App() {
                       onChange={setAttributeFilter}
                     />
                   </div>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(2,minmax(150px,1fr))] xl:items-end">
+                    <DateRangeFilter
+                      label="日期区间"
+                      startValue={overviewStartDateFilter}
+                      endValue={overviewEndDateFilter}
+                      options={options.dates}
+                      onStartChange={setOverviewStartDateFilter}
+                      onEndChange={setOverviewEndDateFilter}
+                      onClear={() => {
+                        setOverviewStartDateFilter(ALL_OPTION);
+                        setOverviewEndDateFilter(ALL_OPTION);
+                      }}
+                      compact
+                    />
+                    <WeekQuickSelect
+                      label="周区间"
+                      value={getWeekValue(overviewStartDateFilter, overviewEndDateFilter, weekOptions)}
+                      options={weekOptions}
+                      onChange={(week) => {
+                        setOverviewStartDateFilter(week.start);
+                        setOverviewEndDateFilter(week.end);
+                      }}
+                      onClear={() => {
+                        setOverviewStartDateFilter(ALL_OPTION);
+                        setOverviewEndDateFilter(ALL_OPTION);
+                      }}
+                    />
+                    <FilterSelect
+                      label="场次"
+                      icon={<Layers3 size={16} />}
+                      value={overviewSessionFilter}
+                      options={options.sessions}
+                      onChange={setOverviewSessionFilter}
+                    />
+                    <FilterSelect
+                      label="批次"
+                      icon={<Boxes size={16} />}
+                      value={overviewBatchFilter}
+                      options={options.batches}
+                      onChange={setOverviewBatchFilter}
+                    />
+                  </div>
                 )}
                 {activeView === 'compare' ? (
                   <div className="grid gap-3 md:grid-cols-3">
                     <FilterSelect
                       label="场次"
                       icon={<Layers3 size={16} />}
-                      value={sessionFilter}
+                      value={compareSessionFilter}
                       options={options.sessions}
-                      onChange={setSessionFilter}
+                      onChange={setCompareSessionFilter}
                     />
                     <FilterSelect
                       label="批次"
                       icon={<Boxes size={16} />}
-                      value={batchFilter}
+                      value={compareBatchFilter}
                       options={options.batches}
-                      onChange={setBatchFilter}
+                      onChange={setCompareBatchFilter}
                     />
                     <FilterSelect
                       label="属性项"
                       icon={<Tags size={16} />}
-                      value={attributeFilter}
+                      value={compareAttributeFilter}
                       options={options.attributes}
-                      onChange={setAttributeFilter}
+                      onChange={setCompareAttributeFilter}
                     />
                   </div>
                 ) : null}
@@ -2553,7 +2569,7 @@ function App() {
                             {categoryData.map((item, index) => (
                               <Cell
                                 key={item.name}
-                                fill={['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'][index % 6]}
+                                fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]}
                               />
                             ))}
                           </Pie>
@@ -2568,7 +2584,7 @@ function App() {
                             <span
                               className="h-2.5 w-2.5 shrink-0 rounded-full"
                               style={{
-                                backgroundColor: ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'][index % 6],
+                                backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
                               }}
                             />
                             <span className="truncate text-sm text-slate-600">{item.name}</span>
@@ -2582,6 +2598,14 @@ function App() {
                   </div>
                 </div>
               </section>
+
+              <section className="mt-8">
+                <SessionShareCard
+                  data={sessionShareData}
+                  title="场次占比分布"
+                  subtitle="按当前首页筛选范围内的申报次数计算，各场次占比合计为 100%。"
+                />
+              </section>
             </>
           ) : activeView === 'compare' ? (
             <>
@@ -2593,235 +2617,116 @@ function App() {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
                   >
-                    <CompareCard
-                      title={card.title}
-                      leftValue={card.formatter(card.leftValue)}
-                      rightValue={card.formatter(card.rightValue)}
-                      deltaValue={card.leftValue - card.rightValue}
-                      formatter={card.formatter}
-                    />
+                    <StatCard {...card} />
                   </motion.div>
                 ))}
               </section>
 
-              <section className="mt-8">
+              <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6 flex items-center justify-between">
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
                     <div>
-                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Comparison</p>
-                      <h2 className="mt-2 font-display text-2xl text-slate-900">区间概览</h2>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Dimension Compare</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">
+                        {COMPARE_DIMENSION_LABELS[compareDimension]}质量对比
+                      </h2>
+                      <p className="mt-2 text-sm text-slate-500">
+                        同一时间周期内，按{COMPARE_DIMENSION_LABELS[compareDimension]}拆解举证准确率与精准通过率。
+                      </p>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">
-                      {compareModeReady ? '已选择双区间' : '请先完成 A/B 区间选择'}
-                    </span>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <CompareSummaryBlock
-                      title="区间 A"
-                      dateText={`${formatDateDisplay(compareLeftStart) || '未选'} → ${formatDateDisplay(compareLeftEnd) || '未选'}`}
-                      metrics={compareLeftMetrics}
-                      rowCount={compareLeftRows.length}
-                    />
-                    <CompareSummaryBlock
-                      title="区间 B"
-                      dateText={`${formatDateDisplay(compareRightStart) || '未选'} → ${formatDateDisplay(compareRightEnd) || '未选'}`}
-                      metrics={compareRightMetrics}
-                      rowCount={compareRightRows.length}
-                    />
-                  </div>
-                </div>
-              </section>
-
-              <section className="mt-8 grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Trend Compare</p>
-                      <h2 className="mt-2 font-display text-2xl text-slate-900">双区间趋势对比</h2>
-                      <p className="mt-2 text-sm text-slate-500">按区间内第 N 天对齐比较举证准确率，不直接按自然日对齐。</p>
+                    <div className="flex flex-wrap items-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-700" />
+                        举证准确率
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-full bg-blue-700" />
+                        精准通过率
+                      </span>
                     </div>
-                    <div className="text-xs text-slate-500">举证准确率</div>
                   </div>
                   <div className="h-[340px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={compareTrend.rows}>
-                        <defs>
-                          <linearGradient id="compareLeftFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#0f766e" stopOpacity={0.22} />
-                            <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
+                      <BarChart data={compareDimensionRows} layout="vertical" margin={{ top: 0, right: 14, left: 10, bottom: 0 }}>
                         <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                        <XAxis dataKey="dayLabel" tickLine={false} axisLine={false} fontSize={12} />
-                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
-                        <Tooltip content={<CompareTrendTooltip />} />
-                        <Area
-                          type="monotone"
-                          dataKey="leftProofAccuracy"
-                          stroke="#0f766e"
-                          fill="url(#compareLeftFill)"
-                          strokeWidth={2.5}
-                          name={`区间A ${compareTrend.leftLabel}`}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="rightProofAccuracy"
-                          stroke="#1d4ed8"
-                          fill="transparent"
-                          strokeWidth={2.5}
-                          name={`区间B ${compareTrend.rightLabel}`}
-                        />
-                      </AreaChart>
+                        <XAxis type="number" domain={[0, 1]} tickLine={false} axisLine={false} fontSize={12} tickFormatter={(value) => `${Math.round(Number(value) * 100)}%`} />
+                        <YAxis type="category" dataKey="name" width={110} tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip content={<RateTrendTooltip />} />
+                        <Bar dataKey="metrics.proofAccuracy" radius={[0, 10, 10, 0]} fill="#0f766e" name="举证准确率" />
+                        <Bar dataKey="metrics.exactPassRate" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="精准通过率" />
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
 
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Quality Rate</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">人效率趋势</h2>
-                    <p className="mt-2 text-sm text-slate-500">用于观察人效口径下的精准通过率与举证准确率是否稳定。</p>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Declaration Scale</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">申报规模对比</h2>
+                    <p className="mt-2 text-sm text-slate-500">同一周期内各对象的申报次数，帮助判断质量差异是否有足够样本支撑。</p>
                   </div>
                   <div className="h-[320px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={efficiencyTrend}>
-                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
-                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(Number(value) * 100)}%`} />
-                        <Tooltip formatter={(value, name) => [formatPercent(Number(value)), name]} />
-                        <Line type="monotone" dataKey="precisionPassRate" stroke="#1d4ed8" strokeWidth={2.5} dot={false} name="精准通过率" />
-                        <Line type="monotone" dataKey="proofAccuracy" stroke="#0f766e" strokeWidth={2.5} dot={false} name="举证准确率" />
-                      </LineChart>
+                      <BarChart data={compareDimensionRows} layout="vertical" margin={{ top: 0, right: 14, left: 10, bottom: 0 }}>
+                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
+                        <XAxis type="number" tickLine={false} axisLine={false} fontSize={12} />
+                        <YAxis type="category" dataKey="name" width={110} tickLine={false} axisLine={false} fontSize={12} />
+                        <Tooltip formatter={(value) => [formatInteger(Number(value)), '申报次数']} />
+                        <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#f97316" name="申报次数" />
+                      </BarChart>
                     </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6 flex items-end justify-between gap-4">
-                    <div>
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Compare</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">场次对比</h2>
-                      <p className="mt-2 text-sm text-slate-500">选择一个场次后查看 A/B 区间下的举证准确率与申报次数。</p>
-                    </div>
-                    <div className="w-full max-w-[240px]">
-                      <FilterSelect
-                        label="选择场次"
-                        icon={<Layers3 size={16} />}
-                        value={compareSessionSelection}
-                        options={compareSessionOptions}
-                        onChange={setCompareSessionSelection}
-                        tone="light"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    {compareSelectedSession ? (
-                        <div
-                          key={compareSelectedSession.session}
-                          className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3"
-                        >
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <p className="font-medium text-slate-900">{compareSelectedSession.session}</p>
-                              <p className="mt-1 text-xs text-slate-500">
-                                A申报 {formatInteger(compareSelectedSession.leftDeclarations)} / B申报 {formatInteger(compareSelectedSession.rightDeclarations)}
-                              </p>
-                            </div>
-                            <DeltaBadge
-                              delta={compareSelectedSession.leftProofAccuracy - compareSelectedSession.rightProofAccuracy}
-                              formatter={formatPercent}
-                            />
-                          </div>
-                          <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                            <div className="rounded-xl bg-white px-3 py-2">
-                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">区间 A</p>
-                              <p className="mt-1 font-medium text-slate-900">{formatPercent(compareSelectedSession.leftProofAccuracy)}</p>
-                            </div>
-                            <div className="rounded-xl bg-white px-3 py-2">
-                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">区间 B</p>
-                              <p className="mt-1 font-medium text-slate-900">{formatPercent(compareSelectedSession.rightProofAccuracy)}</p>
-                            </div>
-                          </div>
-                        </div>
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
-                        先选择两个完整区间，再查看场次对比。
-                      </div>
-                    )}
                   </div>
                 </div>
               </section>
 
               <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                <div className="mb-5 flex items-end justify-between gap-4">
+                <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
                   <div>
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Batch Compare</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">批次对比</h2>
-                    <p className="mt-2 text-sm text-slate-500">选择两个批次，图示比较它们在 A/B 区间下的举证准确率。</p>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Compare Detail</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">
+                      {COMPARE_DIMENSION_LABELS[compareDimension]}明细对比
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-500">按申报次数排序，保留前 12 个对象。</p>
                   </div>
                   <div className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
-                    当前对比指标：举证准确率
+                    当前周期：{formatDateDisplay(compareStartDateFilter) || '全部'} ~ {formatDateDisplay(compareEndDateFilter) || '全部'}
                   </div>
                 </div>
-                <div className="grid gap-4 lg:grid-cols-[260px_260px_1fr]">
-                  {compareBatchRows.length ? (
-                    <>
-                      <FilterSelect
-                        label="批次一"
-                        icon={<Boxes size={16} />}
-                        value={compareBatchFirstSelection}
-                        options={compareBatchOptions}
-                        onChange={setCompareBatchFirstSelection}
-                        tone="light"
-                      />
-                      <FilterSelect
-                        label="批次二"
-                        icon={<Boxes size={16} />}
-                        value={compareBatchSecondSelection}
-                        options={compareBatchOptions}
-                        onChange={setCompareBatchSecondSelection}
-                        tone="light"
-                      />
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                          <span className="rounded-full bg-white px-3 py-1.5">
-                            {compareSelectedBatchFirst?.batch ?? '批次一'}：A申报 {formatInteger(compareSelectedBatchFirst?.leftDeclarations ?? 0)} / B申报 {formatInteger(compareSelectedBatchFirst?.rightDeclarations ?? 0)}
-                          </span>
-                          <span className="rounded-full bg-white px-3 py-1.5">
-                            {compareSelectedBatchSecond?.batch ?? '批次二'}：A申报 {formatInteger(compareSelectedBatchSecond?.leftDeclarations ?? 0)} / B申报 {formatInteger(compareSelectedBatchSecond?.rightDeclarations ?? 0)}
-                          </span>
-                        </div>
-                        <div className="h-[280px] w-full">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={compareBatchChartData} barGap={18}>
-                              <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                              <XAxis dataKey="metric" tickLine={false} axisLine={false} fontSize={12} />
-                              <YAxis
-                                tickLine={false}
-                                axisLine={false}
-                                fontSize={12}
-                                domain={[0, 1]}
-                                tickFormatter={(value) => `${Math.round(value * 100)}%`}
-                              />
-                              <Tooltip content={<RateTrendTooltip />} />
-                              <Bar
-                                dataKey={compareSelectedBatchFirst?.batch ?? '批次一'}
-                                radius={[10, 10, 0, 0]}
-                                fill="#0f766e"
-                              />
-                              <Bar
-                                dataKey={compareSelectedBatchSecond?.batch ?? '批次二'}
-                                radius={[10, 10, 0, 0]}
-                                fill="#1d4ed8"
-                              />
-                            </BarChart>
-                          </ResponsiveContainer>
+                <div className="space-y-3">
+                  {compareDimensionRows.length ? (
+                    compareDimensionRows.map((item, index) => (
+                      <div key={item.name} className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium text-slate-900">
+                              {index + 1}. {item.name}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">申报 {formatInteger(item.declarations)}</p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-right text-sm sm:grid-cols-4">
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs text-slate-400">举证准确率</p>
+                              <p className="font-medium text-emerald-700">{formatPercent(item.metrics.proofAccuracy)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs text-slate-400">精准通过率</p>
+                              <p className="font-medium text-blue-700">{formatPercent(item.metrics.exactPassRate)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs text-slate-400">模棱两可率</p>
+                              <p className="font-medium text-amber-700">{formatPercent(item.metrics.ambiguousRate)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white px-3 py-2">
+                              <p className="text-xs text-slate-400">拒绝率</p>
+                              <p className="font-medium text-rose-700">{formatPercent(item.metrics.rejectRate)}</p>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </>
+                    ))
                   ) : (
-                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500 lg:col-span-3">
-                      先选择两个完整区间，再查看批次对比。
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+                      当前筛选范围内暂无可对比数据。
                     </div>
                   )}
                 </div>
@@ -2848,6 +2753,14 @@ function App() {
                 <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
                   <StatCard title="精准通过率" value={formatPercent(metrics.exactPassRate)} hint="当前属性项口径" tone="blue" icon={<Target size={18} />} />
                 </motion.div>
+              </section>
+
+              <section className="mt-8">
+                <SessionShareCard
+                  data={sessionShareData}
+                  title="场次占比分布"
+                  subtitle="按当前属性项分析筛选范围内的申报次数计算，用于观察该属性项主要集中在哪些场次。"
+                />
               </section>
 
               <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
@@ -3707,6 +3620,97 @@ function AiInsightColumn({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function SessionShareCard({
+  data,
+  title,
+  subtitle,
+}: {
+  data: ReturnType<typeof aggregateSessionShares>;
+  title: string;
+  subtitle: string;
+}) {
+  const totalDeclarations = data.reduce((sum, item) => sum + item.declarations, 0);
+  const topSession = data[0];
+
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Mix</p>
+          <h2 className="mt-2 font-display text-2xl text-slate-900">{title}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-500">{subtitle}</p>
+        </div>
+        <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">申报合计</p>
+          <p className="mt-1 font-display text-2xl text-slate-900">{formatInteger(totalDeclarations)}</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Top：{topSession ? `${topSession.name} ${formatPercent(topSession.value)}` : '暂无'}
+          </p>
+        </div>
+      </div>
+
+      {data.length ? (
+        <div className="grid gap-6 lg:grid-cols-[minmax(260px,0.95fr)_minmax(0,1.05fr)] lg:items-center">
+          <div className="h-[300px] min-w-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <Pie
+                  data={data}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={66}
+                  outerRadius={112}
+                  paddingAngle={2}
+                >
+                  {data.map((item, index) => (
+                    <Cell key={item.name} fill={SESSION_COLORS[index % SESSION_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: number, _name, item) => [formatPercent(value), item.payload.name]} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {data.map((item, index) => (
+              <div key={item.name} className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: SESSION_COLORS[index % SESSION_COLORS.length] }}
+                    />
+                    <span className="truncate text-sm font-medium text-slate-700">{item.name}</span>
+                  </div>
+                  <span className="shrink-0 font-display text-base font-semibold text-slate-900">
+                    {formatPercent(item.value)}
+                  </span>
+                </div>
+                <div className="mt-3 h-2 rounded-full bg-white">
+                  <div
+                    className="h-2 rounded-full"
+                    style={{
+                      width: `${Math.min(item.value * 100, 100)}%`,
+                      backgroundColor: SESSION_COLORS[index % SESSION_COLORS.length],
+                    }}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">申报 {formatInteger(item.declarations)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+          当前筛选范围内暂无场次数据。
+        </div>
+      )}
     </div>
   );
 }
