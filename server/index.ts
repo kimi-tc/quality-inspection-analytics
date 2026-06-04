@@ -129,8 +129,64 @@ const readSeedPropertyCategoryDictionary = async (): Promise<PropertyCategoryEnt
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
+const sharedDataApiBaseUrl = process.env.SHARED_DATA_API_BASE_URL?.trim().replace(/\/$/, '') || '';
+const sharedDataApiTimeoutMs = Number(process.env.SHARED_DATA_API_TIMEOUT_MS || 120000);
+const sharedDataApiPrefixes = [
+  '/api/dataset',
+  '/api/efficiency-dataset',
+  '/api/property-category-dictionary',
+];
 
 app.use(express.json({ limit: '20mb' }));
+
+app.get('/api/data-source', (_req, res) => {
+  res.json({
+    mode: sharedDataApiBaseUrl ? 'remote' : 'local',
+    baseUrl: sharedDataApiBaseUrl || `http://127.0.0.1:${port}`,
+  });
+});
+
+app.use(async (req, res, next) => {
+  const shouldProxy =
+    sharedDataApiBaseUrl &&
+    sharedDataApiPrefixes.some(
+      (prefix) => req.path === prefix || req.path.startsWith(`${prefix}/`),
+    );
+
+  if (!shouldProxy) {
+    next();
+    return;
+  }
+
+  try {
+    const upstreamResponse = await fetch(`${sharedDataApiBaseUrl}${req.originalUrl}`, {
+      method: req.method,
+      headers: {
+        accept: 'application/json',
+        ...(req.method === 'GET' || req.method === 'HEAD'
+          ? {}
+          : { 'content-type': 'application/json' }),
+      },
+      body:
+        req.method === 'GET' || req.method === 'HEAD'
+          ? undefined
+          : JSON.stringify(req.body ?? {}),
+      signal: AbortSignal.timeout(sharedDataApiTimeoutMs),
+    });
+    const responseBody = await upstreamResponse.text();
+    const contentType = upstreamResponse.headers.get('content-type');
+
+    if (contentType) {
+      res.setHeader('content-type', contentType);
+    }
+    res.status(upstreamResponse.status).send(responseBody);
+  } catch (error) {
+    res.status(502).json({
+      message: `统一数据服务连接失败：${error instanceof Error ? error.message : '未知错误'}`,
+      baseUrl: sharedDataApiBaseUrl,
+    });
+  }
+});
 
 const buildRowKey = (row: ImportedRow) =>
   [
