@@ -100,9 +100,30 @@ const ALL_OPTION = '全部';
 const AMBIGUOUS_RATE_TARGET = 0.07;
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
 type CompareQualityMetric = 'proofAccuracy' | 'exactPassRate' | 'ambiguousRate' | 'rejectRate';
+type CompareDimension = 'session' | 'attribute' | 'batch';
 const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
 const CATEGORY_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 const SESSION_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#6366f1', '#f43f5e', '#64748b', '#84cc16', '#a855f7'];
+const COMPARE_DIMENSIONS: Array<{ key: CompareDimension; label: string; title: string; description: string }> = [
+  {
+    key: 'session',
+    label: '场次',
+    title: '场次 A / 场次 B 质量趋势',
+    description: '在相同日期、批次和属性项条件下，按自然日对比两个场次的质量变化。',
+  },
+  {
+    key: 'attribute',
+    label: '属性项',
+    title: '属性项 A / 属性项 B 质量趋势',
+    description: '在相同日期、场次和批次条件下，按自然日对比两个属性项的质量变化。',
+  },
+  {
+    key: 'batch',
+    label: '批次',
+    title: '批次 A / 批次 B 质量趋势',
+    description: '在相同日期、场次和属性项条件下，按自然日对比两个批次的质量变化。',
+  },
+];
 const COMPARE_QUALITY_METRICS: Array<{
   key: CompareQualityMetric;
   label: string;
@@ -601,42 +622,76 @@ const aggregateAttributes = (rows: ImportedRow[]) =>
 
 const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: PropertyCategoryEntry[]) =>
   Object.values(
-    rows.reduce<Record<string, { name: string; value: number }>>((acc, row) => {
+    rows.reduce<
+      Record<
+        string,
+        {
+          name: string;
+          declarations: number;
+          ambiguousPasses: number;
+          rejects: number;
+          proofRejects: number;
+        }
+      >
+    >((acc, row) => {
       const key = resolveCategory(row.category, row.attribute, propertyCategoryDictionary) || '未分类';
       if (!acc[key]) {
-        acc[key] = { name: key, value: 0 };
+        acc[key] = { name: key, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
       }
 
-      acc[key].value += Math.max(row.declarations, row.ambiguousPasses, row.rejects, row.proofRejects);
+      acc[key].declarations += row.declarations;
+      acc[key].ambiguousPasses += row.ambiguousPasses;
+      acc[key].rejects += row.rejects;
+      acc[key].proofRejects += row.proofRejects;
       return acc;
     }, {}),
   )
     .map((item, _, allItems) => {
-      const total = allItems.reduce((sum, current) => sum + current.value, 0);
+      const total = allItems.reduce((sum, current) => sum + current.declarations, 0);
+      const safeDivide = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
       return {
         ...item,
-        value: total ? item.value / total : 0,
+        value: total ? item.declarations / total : 0,
+        proofAccuracy: safeDivide(item.declarations - item.ambiguousPasses - item.proofRejects, item.declarations),
+        exactPassRate: safeDivide(item.declarations - item.ambiguousPasses - item.rejects, item.declarations),
       };
     })
     .sort((a, b) => b.value - a.value);
 
 const aggregateSessionShares = (rows: ImportedRow[]) =>
   Object.values(
-    rows.reduce<Record<string, { name: string; declarations: number }>>((acc, row) => {
+    rows.reduce<
+      Record<
+        string,
+        {
+          name: string;
+          declarations: number;
+          ambiguousPasses: number;
+          rejects: number;
+          proofRejects: number;
+        }
+      >
+    >((acc, row) => {
       const key = row.session || '未识别场次';
       if (!acc[key]) {
-        acc[key] = { name: key, declarations: 0 };
+        acc[key] = { name: key, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
       }
 
       acc[key].declarations += row.declarations;
+      acc[key].ambiguousPasses += row.ambiguousPasses;
+      acc[key].rejects += row.rejects;
+      acc[key].proofRejects += row.proofRejects;
       return acc;
     }, {}),
   )
     .map((item, _, allItems) => {
       const total = allItems.reduce((sum, current) => sum + current.declarations, 0);
+      const safeDivide = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
       return {
         ...item,
         value: total ? item.declarations / total : 0,
+        proofAccuracy: safeDivide(item.declarations - item.ambiguousPasses - item.proofRejects, item.declarations),
+        exactPassRate: safeDivide(item.declarations - item.ambiguousPasses - item.rejects, item.declarations),
       };
     })
     .sort((a, b) => b.declarations - a.declarations);
@@ -723,6 +778,10 @@ const aggregateSessionCompareTrend = (
 
 const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch') => {
   const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
+  const getBatchOrder = (name: string) => {
+    const match = name.match(/第(\d+)批/);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
 
   return Object.values(
     rows.reduce<
@@ -746,7 +805,7 @@ const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch'
       proofAccuracy: safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations),
       exactPassRate: safeRate(item.declarations - item.ambiguous - item.rejects, item.declarations),
     }))
-    .sort((a, b) => b.declarations - a.declarations)
+    .sort((a, b) => (key === 'batch' ? getBatchOrder(a.name) - getBatchOrder(b.name) : b.declarations - a.declarations))
     .slice(0, 10);
 };
 
@@ -1197,6 +1256,82 @@ const aggregateEmployeeEfficiencyDetail = (
   };
 };
 
+const aggregateEmployeeEfficiencyAnomalies = (rows: EfficiencyRow[]) => {
+  const dates = [...new Set(rows.map((row) => row.date).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  if (dates.length < 2) {
+    return { efficiencyChanges: [], combinedAnomalies: [] };
+  }
+
+  const midpoint = Math.ceil(dates.length / 2);
+  const earlyDates = new Set(dates.slice(0, midpoint));
+  const lateDates = new Set(dates.slice(midpoint));
+
+  if (!earlyDates.size || !lateDates.size) {
+    return { efficiencyChanges: [], combinedAnomalies: [] };
+  }
+
+  const grouped = rows.reduce<Record<string, EfficiencyRow[]>>((acc, row) => {
+    if (!acc[row.employee]) {
+      acc[row.employee] = [];
+    }
+
+    acc[row.employee].push(row);
+    return acc;
+  }, {});
+
+  const summarize = (employeeRows: EfficiencyRow[], targetDates: Set<string>) => {
+    const periodRows = employeeRows.filter((row) => targetDates.has(row.date));
+    const activeDays = new Set(periodRows.map((row) => row.date).filter(Boolean)).size;
+    const metrics = aggregateEfficiency(periodRows);
+
+    return {
+      activeDays,
+      handledCount: metrics.handledCount,
+      weightedHandledCount: metrics.weightedHandledCount,
+      dailyWeightedAverage: activeDays ? metrics.weightedHandledCount / activeDays : 0,
+      precisionPassRate: metrics.precisionPassRate,
+      proofAccuracy: metrics.proofAccuracy,
+    };
+  };
+
+  const anomalies = Object.entries(grouped)
+    .map(([employee, employeeRows]) => {
+      const early = summarize(employeeRows, earlyDates);
+      const late = summarize(employeeRows, lateDates);
+      const totalHandledCount = early.handledCount + late.handledCount;
+      const efficiencyDelta = late.dailyWeightedAverage - early.dailyWeightedAverage;
+      const efficiencyDeltaRate = early.dailyWeightedAverage ? efficiencyDelta / early.dailyWeightedAverage : 0;
+      const precisionPassRateDelta = late.precisionPassRate - early.precisionPassRate;
+      const proofAccuracyDelta = late.proofAccuracy - early.proofAccuracy;
+
+      return {
+        employee,
+        team: employeeRows[0]?.team ?? '',
+        totalHandledCount,
+        early,
+        late,
+        efficiencyDelta,
+        efficiencyDeltaRate,
+        precisionPassRateDelta,
+        proofAccuracyDelta,
+        combinedScore: Math.abs(efficiencyDeltaRate) + Math.abs(precisionPassRateDelta) * 2,
+      };
+    })
+    .filter((item) => item.totalHandledCount >= 20 && item.early.activeDays > 0 && item.late.activeDays > 0);
+
+  const efficiencyChanges = [...anomalies]
+    .filter((item) => Math.abs(item.efficiencyDeltaRate) >= 0.2 || Math.abs(item.efficiencyDelta) >= 10)
+    .sort((a, b) => Math.abs(b.efficiencyDeltaRate) - Math.abs(a.efficiencyDeltaRate))
+    .slice(0, 5);
+
+  const combinedAnomalies = [...anomalies]
+    .filter((item) => Math.abs(item.precisionPassRateDelta) >= 0.05 && (Math.abs(item.efficiencyDeltaRate) >= 0.15 || Math.abs(item.efficiencyDelta) >= 8))
+    .sort((a, b) => b.combinedScore - a.combinedScore)
+    .slice(0, 5);
+
+  return { efficiencyChanges, combinedAnomalies };
+};
+
 const aggregateQualityDimension = (
   rows: ImportedRow[],
   key: 'session' | 'batch' | 'category' | 'attribute',
@@ -1290,6 +1425,56 @@ const aggregateAttributePrecisionVolatility = (rows: ImportedRow[]) => {
     .slice(0, 5);
 };
 
+const aggregateSessionAttributePassChanges = (rows: ImportedRow[]) => {
+  const totalDeclarations = rows.reduce((sum, row) => sum + row.declarations, 0);
+  const sessionDeclarations = rows.reduce<Record<string, number>>((acc, row) => {
+    const session = row.session || '未识别场次';
+    acc[session] = (acc[session] ?? 0) + row.declarations;
+    return acc;
+  }, {});
+  const majorSessions = new Set(
+    Object.entries(sessionDeclarations)
+      .filter(([, declarations]) => totalDeclarations > 0 && declarations / totalDeclarations > 0.01)
+      .map(([session]) => session),
+  );
+  const grouped = rows
+    .filter((row) => majorSessions.has(row.session || '未识别场次'))
+    .reduce<Record<string, ImportedRow[]>>((acc, row) => {
+      const key = `${row.session || '未识别场次'}|||${row.attribute}`;
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+
+      acc[key].push(row);
+      return acc;
+    }, {});
+
+  return Object.entries(grouped)
+    .map(([key, groupRows]) => {
+      const [session, attribute] = key.split('|||');
+      const trendRows = aggregateTrend(groupRows);
+      const rates = trendRows.filter((item) => item.declarations > 0).map((item) => item.exactPassRate);
+      const declarations = groupRows.reduce((sum, row) => sum + row.declarations, 0);
+      const minRate = rates.length ? Math.min(...rates) : 0;
+      const maxRate = rates.length ? Math.max(...rates) : 0;
+
+      return {
+        session,
+        attribute,
+        declarations,
+        activeDays: rates.length,
+        sessionShare: totalDeclarations ? (sessionDeclarations[session] ?? 0) / totalDeclarations : 0,
+        minRate,
+        maxRate,
+        volatility: maxRate - minRate,
+        overallRate: aggregateMetrics(groupRows).exactPassRate,
+      };
+    })
+    .filter((item) => item.declarations >= 20 && item.activeDays >= 2)
+    .sort((a, b) => b.volatility - a.volatility)
+    .slice(0, 8);
+};
+
 const calculateHealthScore = (
   qualityMetrics: ReturnType<typeof aggregateMetrics>,
   trendSplit: ReturnType<typeof splitTrendMetrics>,
@@ -1338,6 +1523,7 @@ const createAiAnalysis = ({
   categoryData,
   efficiencyMetrics,
   efficiencyRanking,
+  efficiencyRows,
   propertyCategoryDictionary,
 }: {
   qualityMetrics: ReturnType<typeof aggregateMetrics>;
@@ -1346,6 +1532,7 @@ const createAiAnalysis = ({
   categoryData: ReturnType<typeof aggregateCategories>;
   efficiencyMetrics: ReturnType<typeof aggregateEfficiency>;
   efficiencyRanking: ReturnType<typeof aggregateEfficiencyRanking>;
+  efficiencyRows: EfficiencyRow[];
   propertyCategoryDictionary: PropertyCategoryEntry[];
 }) => {
   const topAttribute = topAttributes[0];
@@ -1372,7 +1559,13 @@ const createAiAnalysis = ({
     .filter((item) => item.declarations >= 20 && item.metrics.rejectRate >= qualityMetrics.rejectRate)
     .sort((a, b) => b.metrics.rejectRate - a.metrics.rejectRate)
     .slice(0, 5);
+  const highAmbiguousAttributes = attributeDrivers
+    .filter((item) => item.declarations >= 20 && item.metrics.ambiguousRate >= Math.max(AMBIGUOUS_RATE_TARGET, qualityMetrics.ambiguousRate))
+    .sort((a, b) => b.metrics.ambiguousRate - a.metrics.ambiguousRate)
+    .slice(0, 5);
   const precisionVolatileAttributes = aggregateAttributePrecisionVolatility(qualityRows);
+  const sessionAttributePassChanges = aggregateSessionAttributePassChanges(qualityRows);
+  const employeeAnomalies = aggregateEmployeeEfficiencyAnomalies(efficiencyRows);
   const ambiguousCategories = categoryDrivers
     .filter((item) => item.declarations >= 10)
     .sort((a, b) => b.metrics.ambiguousRate - a.metrics.ambiguousRate)
@@ -1395,8 +1588,11 @@ const createAiAnalysis = ({
     weakSessions.length
       ? `场次对比显示，${weakSessions.map((item) => `「${item.name}」举证准确率${formatPercent(item.metrics.proofAccuracy)}`).join('、')} 更需要优先复盘。`
       : '场次之间暂未出现明显质量断层，建议继续保持常规监控。',
+    sessionAttributePassChanges.length
+      ? `在申报占比超过 1% 的场次内，精准通过率变化较大的场次-属性项组合包括：${sessionAttributePassChanges.slice(0, 3).map((item) => `「${item.session}-${item.attribute}」波动${formatPercent(item.volatility)}`).join('；')}。`
+      : '申报占比超过 1% 的场次内，暂未识别到高样本属性项通过率明显波动。',
     hasEfficiencyData
-      ? `人效侧已导入 ${formatInteger(efficiencyMetrics.handledCount)} 单、覆盖 ${formatInteger(efficiencyMetrics.employeeCount)} 人；本次 AI 分析仍以质量指标和属性项口径为主。`
+      ? `人效侧已导入 ${formatInteger(efficiencyMetrics.handledCount)} 单、覆盖 ${formatInteger(efficiencyMetrics.employeeCount)} 人；人员维度将重点看审核效率变化，以及精准通过率与效率同步异动。`
       : '当前还没有可分析的人效数据；AI 分析会先基于质量数据输出结论。',
   ];
 
@@ -1416,9 +1612,18 @@ const createAiAnalysis = ({
     riskyAttributes.length
       ? `拒绝风险属性项：${riskyAttributes.map((item) => `「${item.name}」拒绝率${formatPercent(item.metrics.rejectRate)}`).join('；')}。`
       : '属性项维度暂未发现高拒绝风险，或样本量不足。',
+    highAmbiguousAttributes.length
+      ? `高模棱两可属性项：${highAmbiguousAttributes.map((item) => `「${item.name}」模棱两可率${formatPercent(item.metrics.ambiguousRate)}、申报${formatInteger(item.declarations)}次`).join('；')}。`
+      : '属性项维度暂未发现高样本高模棱两可风险。',
     precisionVolatileAttributes.length
       ? `精准通过率波动属性项：${precisionVolatileAttributes.map((item) => `「${item.attribute}」波动${formatPercent(item.volatility)}（${formatPercent(item.minRate)}~${formatPercent(item.maxRate)}）`).join('；')}。`
       : '属性项精准通过率暂未发现明显波动，或日期样本不足。',
+    employeeAnomalies.efficiencyChanges.length
+      ? `人员效率变化明显：${employeeAnomalies.efficiencyChanges.map((item) => `「${item.employee}」日均加权审核量${item.efficiencyDelta >= 0 ? '上升' : '下降'}${Math.abs(item.efficiencyDelta).toFixed(1)}（${formatPercent(Math.abs(item.efficiencyDeltaRate))}）`).join('；')}。`
+      : '人员维度暂未识别明显效率变化，或人效样本不足。',
+    employeeAnomalies.combinedAnomalies.length
+      ? `人员通过率与效率双异动：${employeeAnomalies.combinedAnomalies.map((item) => `「${item.employee}」效率${item.efficiencyDelta >= 0 ? '上升' : '下降'}${Math.abs(item.efficiencyDelta).toFixed(1)}、精准通过率变化${formatPercent(item.precisionPassRateDelta)}`).join('；')}。`
+      : '暂未识别通过率与效率同时明显异动的人员。',
     hasEfficiencyData
       ? '人效底表已导入，但本轮 AI 风险判断不纳入平均处理时长和超时率。'
       : '人效底表未导入，本轮 AI 风险判断仅基于质量数据。',
@@ -1431,15 +1636,25 @@ const createAiAnalysis = ({
     topCategory
       ? `关注属性项分类「${topCategory.name}」，其占当前分类分布 ${formatPercent(topCategory.value)}。`
       : '属性项分类样本不足，暂不做分类归因。',
-    ambiguousCategories.length
-      ? `模糊口径复盘建议优先看：${ambiguousCategories.map((item) => `「${item.name}」${formatPercent(item.metrics.ambiguousRate)}`).join('、')}。`
-      : '模糊通过暂无明显分类集中，可保持常规抽检。',
+    sessionAttributePassChanges.length
+      ? `场次内通过率变化专项：优先抽看${sessionAttributePassChanges.slice(0, 3).map((item) => `「${item.session}-${item.attribute}」`).join('、')}，对比高低日期样本，确认是场次结构变化、口径漂移还是人员判断差异。`
+      : '主要场次内未识别明显通过率波动组合，暂不建立场次-属性项专项。',
+    highAmbiguousAttributes.length
+      ? `模糊口径复盘建议优先看：${highAmbiguousAttributes.map((item) => `「${item.name}」${formatPercent(item.metrics.ambiguousRate)}`).join('、')}。`
+      : ambiguousCategories.length
+        ? `模糊口径复盘可先看分类：${ambiguousCategories.map((item) => `「${item.name}」${formatPercent(item.metrics.ambiguousRate)}`).join('、')}。`
+        : '模糊通过暂无明显属性项或分类集中，可保持常规抽检。',
     highRejectAttributes.length
       ? `拒绝率专项建议聚焦：${highRejectAttributes.map((item) => `「${item.name}」拒绝率${formatPercent(item.metrics.rejectRate)}、申报${formatInteger(item.declarations)}次`).join('；')}，逐项核对拒绝原因是否来自拍摄证据、规则口径或商品描述。`
       : '拒绝率未呈现高样本属性项集中，建议保持按场次抽检。',
     precisionVolatileAttributes.length
       ? `精准通过率波动建议优先抽看：${precisionVolatileAttributes.slice(0, 3).map((item) => `「${item.attribute}」`).join('、')}，对比高低日期样本，确认是否存在口径漂移或人员判断差异。`
       : '精准通过率波动不明显，暂不需要单独建立波动专项。',
+    employeeAnomalies.combinedAnomalies.length
+      ? `人员异动复盘建议优先看：${employeeAnomalies.combinedAnomalies.slice(0, 3).map((item) => `「${item.employee}」`).join('、')}，逐人核对其审核场次结构、属性项结构和抽检样本，判断是否属于效率提升带来的质量波动。`
+      : employeeAnomalies.efficiencyChanges.length
+        ? `人员效率变化建议关注：${employeeAnomalies.efficiencyChanges.slice(0, 3).map((item) => `「${item.employee}」`).join('、')}，确认效率变化是否来自排班、场次结构或审核难度变化。`
+        : '人员侧暂未触发效率/通过率异动专项。',
     weakSessions[0] || weakBatches[0]
       ? `建议本周复盘优先级：先看${weakSessions[0] ? `场次「${weakSessions[0].name}」` : ''}${weakSessions[0] && weakBatches[0] ? '，再看' : ''}${weakBatches[0] ? `批次「${weakBatches[0].name}」` : ''}。`
       : '建议本周以高频属性项和分类抽检为主，暂不需要大规模专项复盘。',
@@ -1455,9 +1670,20 @@ const createAiAnalysis = ({
     weakSessions[0]
       ? `场次对比核心差异：「${weakSessions[0].name}」举证准确率 ${formatPercent(weakSessions[0].metrics.proofAccuracy)}，申报 ${formatInteger(weakSessions[0].declarations)} 次。`
       : '暂未识别明显弱势场次。',
+    sessionAttributePassChanges[0]
+      ? `主要场次内通过率变化最大：「${sessionAttributePassChanges[0].session}-${sessionAttributePassChanges[0].attribute}」，精准通过率波动 ${formatPercent(sessionAttributePassChanges[0].volatility)}，场次占比 ${formatPercent(sessionAttributePassChanges[0].sessionShare)}。`
+      : '暂未识别主要场次内通过率明显波动的属性项。',
     highRejectAttributes[0]
       ? `拒绝率最高属性项：「${highRejectAttributes[0].name}」，拒绝率 ${formatPercent(highRejectAttributes[0].metrics.rejectRate)}，申报 ${formatInteger(highRejectAttributes[0].declarations)} 次。`
       : '暂未识别高样本高拒绝属性项。',
+    highAmbiguousAttributes[0]
+      ? `模棱两可率最高属性项：「${highAmbiguousAttributes[0].name}」，模棱两可率 ${formatPercent(highAmbiguousAttributes[0].metrics.ambiguousRate)}，申报 ${formatInteger(highAmbiguousAttributes[0].declarations)} 次。`
+      : '暂未识别高样本高模棱两可属性项。',
+    employeeAnomalies.combinedAnomalies[0]
+      ? `人员双异动最高：「${employeeAnomalies.combinedAnomalies[0].employee}」，日均加权审核量变化 ${employeeAnomalies.combinedAnomalies[0].efficiencyDelta.toFixed(1)}，精准通过率变化 ${formatPercent(employeeAnomalies.combinedAnomalies[0].precisionPassRateDelta)}。`
+      : employeeAnomalies.efficiencyChanges[0]
+        ? `人员效率变化最大：「${employeeAnomalies.efficiencyChanges[0].employee}」，日均加权审核量变化 ${employeeAnomalies.efficiencyChanges[0].efficiencyDelta.toFixed(1)}。`
+        : '暂未识别人员效率或通过率明显异动。',
     precisionVolatileAttributes[0]
       ? `精准通过率波动最大属性项：「${precisionVolatileAttributes[0].attribute}」，波动 ${formatPercent(precisionVolatileAttributes[0].volatility)}。`
       : '暂未识别精准通过率明显波动属性项。',
@@ -1670,12 +1896,18 @@ function App() {
   const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
   const [compareStartDateFilter, setCompareStartDateFilter] = useState(ALL_OPTION);
   const [compareEndDateFilter, setCompareEndDateFilter] = useState(ALL_OPTION);
+  const [compareDimension, setCompareDimension] = useState<CompareDimension>('session');
   const [compareSessionAFilter, setCompareSessionAFilter] = useState('');
   const [compareSessionBFilter, setCompareSessionBFilter] = useState('');
+  const [compareAttributeAFilter, setCompareAttributeAFilter] = useState('');
+  const [compareAttributeBFilter, setCompareAttributeBFilter] = useState('');
+  const [compareBatchAFilter, setCompareBatchAFilter] = useState('');
+  const [compareBatchBFilter, setCompareBatchBFilter] = useState('');
   const [compareQualityMetrics, setCompareQualityMetrics] = useState<CompareQualityMetric[]>([
     'proofAccuracy',
     'exactPassRate',
   ]);
+  const [compareSessionFilter, setCompareSessionFilter] = useState(ALL_OPTION);
   const [compareBatchFilter, setCompareBatchFilter] = useState(ALL_OPTION);
   const [compareAttributeFilter, setCompareAttributeFilter] = useState(ALL_OPTION);
   const [efficiencyStartDateFilter, setEfficiencyStartDateFilter] = useState(ALL_OPTION);
@@ -1819,39 +2051,79 @@ function App() {
     () => aggregateSessionShares(dataset.rows).map((item) => item.name),
     [dataset.rows],
   );
-  const compareSessionA = compareSessionAFilter || compareSessionOptions[0] || '';
-  const compareSessionB =
-    compareSessionBFilter || compareSessionOptions.find((option) => option !== compareSessionA) || compareSessionA;
+  const compareAttributeOptions = useMemo(
+    () => options.attributes.filter((option) => option !== ALL_OPTION),
+    [options.attributes],
+  );
+  const compareBatchOptions = useMemo(
+    () => options.batches.filter((option) => option !== ALL_OPTION),
+    [options.batches],
+  );
+  const compareDimensionConfig = COMPARE_DIMENSIONS.find((item) => item.key === compareDimension) ?? COMPARE_DIMENSIONS[0];
+  const compareDimensionOptions =
+    compareDimension === 'session'
+      ? compareSessionOptions
+      : compareDimension === 'attribute'
+        ? compareAttributeOptions
+        : compareBatchOptions;
+  const compareAFilter =
+    compareDimension === 'session'
+      ? compareSessionAFilter
+      : compareDimension === 'attribute'
+        ? compareAttributeAFilter
+        : compareBatchAFilter;
+  const compareBFilter =
+    compareDimension === 'session'
+      ? compareSessionBFilter
+      : compareDimension === 'attribute'
+        ? compareAttributeBFilter
+        : compareBatchBFilter;
+  const setCompareAFilter =
+    compareDimension === 'session'
+      ? setCompareSessionAFilter
+      : compareDimension === 'attribute'
+        ? setCompareAttributeAFilter
+        : setCompareBatchAFilter;
+  const setCompareBFilter =
+    compareDimension === 'session'
+      ? setCompareSessionBFilter
+      : compareDimension === 'attribute'
+        ? setCompareAttributeBFilter
+        : setCompareBatchBFilter;
+  const compareA = compareAFilter || compareDimensionOptions[0] || '';
+  const compareB = compareBFilter || compareDimensionOptions.find((option) => option !== compareA) || compareA;
   const compareBaseRows = useMemo(
     () =>
       filterRowsByCriteria(dataset.rows, {
         startDate: compareStartDateFilter,
         endDate: compareEndDateFilter,
-        session: ALL_OPTION,
-        batch: compareBatchFilter,
-        attribute: compareAttributeFilter,
+        session: compareDimension === 'session' ? ALL_OPTION : compareSessionFilter,
+        batch: compareDimension === 'batch' ? ALL_OPTION : compareBatchFilter,
+        attribute: compareDimension === 'attribute' ? ALL_OPTION : compareAttributeFilter,
       }),
     [
+      compareDimension,
       compareAttributeFilter,
       compareBatchFilter,
       compareEndDateFilter,
+      compareSessionFilter,
       compareStartDateFilter,
       dataset.rows,
     ],
   );
-  const compareSessionARows = useMemo(
-    () => compareBaseRows.filter((row) => row.session === compareSessionA),
-    [compareBaseRows, compareSessionA],
+  const compareARows = useMemo(
+    () => compareBaseRows.filter((row) => row[compareDimension] === compareA),
+    [compareA, compareBaseRows, compareDimension],
   );
-  const compareSessionBRows = useMemo(
-    () => compareBaseRows.filter((row) => row.session === compareSessionB),
-    [compareBaseRows, compareSessionB],
+  const compareBRows = useMemo(
+    () => compareBaseRows.filter((row) => row[compareDimension] === compareB),
+    [compareB, compareBaseRows, compareDimension],
   );
-  const compareSessionAMetrics = useMemo(() => aggregateMetrics(compareSessionARows), [compareSessionARows]);
-  const compareSessionBMetrics = useMemo(() => aggregateMetrics(compareSessionBRows), [compareSessionBRows]);
-  const compareSessionTrend = useMemo(
-    () => aggregateSessionCompareTrend(compareSessionARows, compareSessionBRows, compareSessionA, compareSessionB),
-    [compareSessionA, compareSessionARows, compareSessionB, compareSessionBRows],
+  const compareAMetrics = useMemo(() => aggregateMetrics(compareARows), [compareARows]);
+  const compareBMetrics = useMemo(() => aggregateMetrics(compareBRows), [compareBRows]);
+  const compareTrend = useMemo(
+    () => aggregateSessionCompareTrend(compareARows, compareBRows, compareA, compareB),
+    [compareA, compareARows, compareB, compareBRows],
   );
   const attributeSessionRows = useMemo(
     () => aggregateDimensionMetrics(filteredRows, 'session'),
@@ -1913,9 +2185,10 @@ function App() {
         categoryData,
         efficiencyMetrics,
         efficiencyRanking,
+        efficiencyRows: filteredEfficiencyRows,
         propertyCategoryDictionary,
       }),
-    [categoryData, efficiencyMetrics, efficiencyRanking, filteredRows, metrics, propertyCategoryDictionary, topAttributes],
+    [categoryData, efficiencyMetrics, efficiencyRanking, filteredEfficiencyRows, filteredRows, metrics, propertyCategoryDictionary, topAttributes],
   );
   const aiContext = useMemo(
     () => ({
@@ -2528,20 +2801,33 @@ function App() {
                 )}
                 {activeView === 'compare' ? (
                   <div className="grid gap-3 md:grid-cols-2">
-                    <FilterSelect
-                      label="批次"
-                      icon={<Boxes size={16} />}
-                      value={compareBatchFilter}
-                      options={options.batches}
-                      onChange={setCompareBatchFilter}
-                    />
-                    <FilterSelect
-                      label="属性项"
-                      icon={<Tags size={16} />}
-                      value={compareAttributeFilter}
-                      options={options.attributes}
-                      onChange={setCompareAttributeFilter}
-                    />
+                    {compareDimension !== 'session' ? (
+                      <FilterSelect
+                        label="场次"
+                        icon={<Layers3 size={16} />}
+                        value={compareSessionFilter}
+                        options={options.sessions}
+                        onChange={setCompareSessionFilter}
+                      />
+                    ) : null}
+                    {compareDimension !== 'batch' ? (
+                      <FilterSelect
+                        label="批次"
+                        icon={<Boxes size={16} />}
+                        value={compareBatchFilter}
+                        options={options.batches}
+                        onChange={setCompareBatchFilter}
+                      />
+                    ) : null}
+                    {compareDimension !== 'attribute' ? (
+                      <FilterSelect
+                        label="属性项"
+                        icon={<Tags size={16} />}
+                        value={compareAttributeFilter}
+                        options={options.attributes}
+                        onChange={setCompareAttributeFilter}
+                      />
+                    ) : null}
                   </div>
                 ) : null}
                 <details className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
@@ -2593,7 +2879,7 @@ function App() {
                 ))}
               </section>
 
-              <section className="mt-8 grid gap-8 xl:grid-cols-[1.25fr_0.75fr]">
+              <section className="mt-8">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6 flex items-center justify-between">
                     <div>
@@ -2638,13 +2924,17 @@ function App() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+              </section>
+
+              <section className="mt-8 grid gap-6 xl:grid-cols-2">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
                     <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Category Mix</p>
                     <h2 className="mt-2 font-display text-2xl text-slate-900">属性项分类分布</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">按当前首页筛选范围内的申报次数计算，同时展示分类质量表现。</p>
                   </div>
-                  <div className="grid min-h-[320px] gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(180px,0.9fr)] lg:items-center">
-                    <div className="h-[280px] min-w-0">
+                  <div className="grid gap-4 lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)] lg:items-center">
+                    <div className="h-[220px] min-w-0">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                           <Pie
@@ -2653,8 +2943,8 @@ function App() {
                             nameKey="name"
                             cx="50%"
                             cy="50%"
-                            innerRadius={58}
-                            outerRadius={102}
+                            innerRadius={46}
+                            outerRadius={82}
                             paddingAngle={2}
                           >
                             {categoryData.map((item, index) => (
@@ -2668,71 +2958,104 @@ function App() {
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {categoryData.map((item, index) => (
-                        <div key={item.name} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className="h-2.5 w-2.5 shrink-0 rounded-full"
-                              style={{
-                                backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
-                              }}
-                            />
-                            <span className="truncate text-sm text-slate-600">{item.name}</span>
+                        <div key={item.name} className="rounded-2xl bg-slate-50 px-3 py-2.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                style={{
+                                  backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+                                }}
+                              />
+                              <span className="truncate text-sm font-medium text-slate-700">{item.name}</span>
+                            </div>
+                            <span className="shrink-0 font-display text-sm font-semibold text-slate-900">
+                              {formatPercent(item.value)}
+                            </span>
                           </div>
-                          <span className="shrink-0 font-display text-sm font-semibold text-slate-900">
-                            {formatPercent(item.value)}
-                          </span>
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-500">
+                            <span>举证 {formatPercent(item.proofAccuracy)}</span>
+                            <span>通过 {formatPercent(item.exactPassRate)}</span>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 </div>
-              </section>
-
-              <section className="mt-8">
                 <SessionShareCard
                   data={sessionShareData}
                   title="场次占比分布"
                   subtitle="按当前首页筛选范围内的申报次数计算，各场次占比合计为 100%。"
+                  compact
+                  metricsOnly
                 />
               </section>
             </>
           ) : activeView === 'compare' ? (
             <>
               <section className="mt-8 grid gap-6 xl:grid-cols-2">
-                <SessionCompareSummaryCard label="场次 A" session={compareSessionA} metrics={compareSessionAMetrics} tone="cyan" />
-                <SessionCompareSummaryCard label="场次 B" session={compareSessionB} metrics={compareSessionBMetrics} tone="orange" />
+                <SessionCompareSummaryCard label={`${compareDimensionConfig.label} A`} session={compareA} metrics={compareAMetrics} tone="cyan" />
+                <SessionCompareSummaryCard label={`${compareDimensionConfig.label} B`} session={compareB} metrics={compareBMetrics} tone="orange" />
               </section>
 
               <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                 <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
                   <div>
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Trend Compare</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">场次 A / 场次 B 质量趋势</h2>
-                    <p className="mt-2 text-sm text-slate-500">在相同日期、批次和属性项条件下，按自然日对比两个场次的质量变化。</p>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Quality Trend Compare</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">{compareDimensionConfig.title}</h2>
+                    <p className="mt-2 text-sm text-slate-500">{compareDimensionConfig.description}</p>
                   </div>
                   <span className="rounded-full bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
                     {formatDateDisplay(compareStartDateFilter) || '全部日期'} ~ {formatDateDisplay(compareEndDateFilter) || '全部日期'}
                   </span>
                 </div>
-                <div className="mb-6 grid gap-4 rounded-3xl border border-slate-100 bg-slate-50/80 p-4 md:grid-cols-2">
+                <div className="mb-6 rounded-3xl border border-slate-100 bg-slate-50/80 p-4">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">对比对象</p>
+                      <p className="mt-1 text-xs text-slate-400">选择本次要对比的维度，再选择 A / B 两个对象。</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {COMPARE_DIMENSIONS.map((dimension) => {
+                        const selected = compareDimension === dimension.key;
+                        return (
+                          <button
+                            key={dimension.key}
+                            type="button"
+                            onClick={() => setCompareDimension(dimension.key)}
+                            aria-pressed={selected}
+                            className={`rounded-full border px-3 py-2 text-xs font-medium transition ${
+                              selected
+                                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                                : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800'
+                            }`}
+                          >
+                            {dimension.label}对比
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
                   <FilterSelect
-                    label="场次 A"
+                    label={`${compareDimensionConfig.label} A`}
                     icon={<span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />}
-                    value={compareSessionA}
-                    options={compareSessionOptions}
-                    onChange={setCompareSessionAFilter}
+                    value={compareA}
+                    options={compareDimensionOptions}
+                    onChange={setCompareAFilter}
                     tone="light"
                   />
                   <FilterSelect
-                    label="场次 B"
+                    label={`${compareDimensionConfig.label} B`}
                     icon={<span className="h-2.5 w-2.5 rounded-full bg-orange-500" />}
-                    value={compareSessionB}
-                    options={compareSessionOptions}
-                    onChange={setCompareSessionBFilter}
+                    value={compareB}
+                    options={compareDimensionOptions}
+                    onChange={setCompareBFilter}
                     tone="light"
                   />
+                  </div>
                 </div>
                 <div className="mb-6 rounded-3xl border border-slate-100 bg-slate-50/80 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2766,14 +3089,14 @@ function App() {
                     </div>
                   </div>
                 </div>
-                {compareSessionTrend.rows.length ? (
+                {compareTrend.rows.length ? (
                   <div className="h-[430px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={compareSessionTrend.rows} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+                      <LineChart data={compareTrend.rows} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
                         <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
                         <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
                         <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} ticks={[0, 0.25, 0.5, 0.75, 1]} allowDataOverflow tickFormatter={(value) => `${Math.round(Number(value) * 100)}%`} />
-                        <Tooltip content={<SessionCompareTrendTooltip leftLabel={compareSessionA} rightLabel={compareSessionB} />} />
+                        <Tooltip content={<SessionCompareTrendTooltip leftLabel={compareA} rightLabel={compareB} />} />
                         {COMPARE_QUALITY_METRICS.filter((metric) => compareQualityMetrics.includes(metric.key)).flatMap((metric) => [
                           <Line
                             key={`left-${metric.key}`}
@@ -2832,14 +3155,6 @@ function App() {
               </section>
 
               <section className="mt-8">
-                <SessionShareCard
-                  data={sessionShareData}
-                  title="场次占比分布"
-                  subtitle="按当前属性项分析筛选范围内的申报次数计算，用于观察该属性项主要集中在哪些场次。"
-                />
-              </section>
-
-              <section className="mt-8 grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6 flex items-center justify-between">
                     <div>
@@ -2868,7 +3183,19 @@ function App() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+              </section>
 
+              <section className="mt-8">
+                <SessionShareCard
+                  data={sessionShareData}
+                  title="场次占比分布"
+                  subtitle="按当前属性项分析筛选范围内的申报次数计算，用于观察该属性项主要集中在哪些场次。"
+                  compact
+                  metricsOnly
+                />
+              </section>
+
+              <section className="mt-8 grid gap-8 xl:grid-cols-2">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
                     <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Attribute Ranking</p>
@@ -2883,27 +3210,6 @@ function App() {
                         <YAxis type="category" dataKey="attribute" width={96} tickLine={false} axisLine={false} fontSize={12} />
                         <Tooltip />
                         <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </section>
-
-              <section className="mt-8 grid gap-8 xl:grid-cols-2">
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6">
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Breakdown</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">场次表现</h2>
-                    <p className="mt-2 text-sm text-slate-500">当前属性项在不同场次下的举证准确率。</p>
-                  </div>
-                  <div className="h-[320px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={attributeSessionRows} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
-                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
-                        <XAxis type="number" domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
-                        <YAxis type="category" dataKey="name" width={96} tickLine={false} axisLine={false} fontSize={12} />
-                        <Tooltip content={<RateTrendTooltip />} />
-                        <Bar dataKey="proofAccuracy" radius={[0, 10, 10, 0]} fill="#0f766e" name="举证准确率" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -3719,34 +4025,39 @@ function SessionShareCard({
   data,
   title,
   subtitle,
+  compact = false,
+  metricsOnly = false,
 }: {
   data: ReturnType<typeof aggregateSessionShares>;
   title: string;
   subtitle: string;
+  compact?: boolean;
+  metricsOnly?: boolean;
 }) {
   const totalDeclarations = data.reduce((sum, item) => sum + item.declarations, 0);
   const topSession = data[0];
+  const visibleData = metricsOnly ? data.filter((item) => item.value > 0.01) : data;
 
   return (
     <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <div className={`${compact ? 'mb-4' : 'mb-6'} flex flex-wrap items-start justify-between gap-4`}>
         <div>
           <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Mix</p>
           <h2 className="mt-2 font-display text-2xl text-slate-900">{title}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-500">{subtitle}</p>
         </div>
-        <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
+        {!metricsOnly && <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
           <p className="text-xs uppercase tracking-[0.18em] text-slate-400">申报合计</p>
           <p className="mt-1 font-display text-2xl text-slate-900">{formatInteger(totalDeclarations)}</p>
           <p className="mt-1 text-xs text-slate-500">
             Top：{topSession ? `${topSession.name} ${formatPercent(topSession.value)}` : '暂无'}
           </p>
-        </div>
+        </div>}
       </div>
 
-      {data.length ? (
-        <div className="grid gap-6 lg:grid-cols-[minmax(260px,0.95fr)_minmax(0,1.05fr)] lg:items-center">
-          <div className="h-[300px] min-w-0">
+      {visibleData.length ? (
+        <div className={metricsOnly ? 'grid grid-cols-2 gap-2' : `${compact ? 'grid gap-4 lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)]' : 'grid gap-6 lg:grid-cols-[minmax(260px,0.95fr)_minmax(0,1.05fr)]'} lg:items-center`}>
+          {!metricsOnly && <div className={`${compact ? 'h-[220px]' : 'h-[300px]'} min-w-0`}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                 <Pie
@@ -3755,8 +4066,8 @@ function SessionShareCard({
                   nameKey="name"
                   cx="50%"
                   cy="50%"
-                  innerRadius={66}
-                  outerRadius={112}
+                  innerRadius={compact ? 46 : 66}
+                  outerRadius={compact ? 82 : 112}
                   paddingAngle={2}
                 >
                   {data.map((item, index) => (
@@ -3766,11 +4077,11 @@ function SessionShareCard({
                 <Tooltip formatter={(value: number, _name, item) => [formatPercent(value), item.payload.name]} />
               </PieChart>
             </ResponsiveContainer>
-          </div>
+          </div>}
 
-          <div className="grid gap-3 md:grid-cols-2">
-            {data.map((item, index) => (
-              <div key={item.name} className="rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3">
+          <div className={metricsOnly ? 'contents' : compact ? 'space-y-2' : 'grid gap-3 md:grid-cols-2'}>
+            {visibleData.map((item, index) => (
+              <div key={item.name} className={`${compact ? 'px-3 py-2.5' : 'border border-slate-100 px-4 py-3'} rounded-2xl bg-slate-50/80`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <span
@@ -3783,7 +4094,7 @@ function SessionShareCard({
                     {formatPercent(item.value)}
                   </span>
                 </div>
-                <div className="mt-3 h-2 rounded-full bg-white">
+                {!metricsOnly && <div className={`${compact ? 'mt-2' : 'mt-3'} h-2 rounded-full bg-white`}>
                   <div
                     className="h-2 rounded-full"
                     style={{
@@ -3791,8 +4102,21 @@ function SessionShareCard({
                       backgroundColor: SESSION_COLORS[index % SESSION_COLORS.length],
                     }}
                   />
-                </div>
-                <p className="mt-2 text-xs text-slate-500">申报 {formatInteger(item.declarations)}</p>
+                </div>}
+                {metricsOnly ? (
+                  <div className="mt-2 space-y-1 text-[11px] leading-4 text-slate-500">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>举证</span>
+                      <span className="font-medium text-slate-700">{formatPercent(item.proofAccuracy)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>通过</span>
+                      <span className="font-medium text-slate-700">{formatPercent(item.exactPassRate)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500">申报 {formatInteger(item.declarations)}</p>
+                )}
               </div>
             ))}
           </div>
@@ -4450,7 +4774,7 @@ function SessionCompareSummaryCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${styles.badge}`}>{label}</span>
-          <h2 className="mt-3 font-display text-2xl text-slate-900">{session || '暂无可选场次'}</h2>
+          <h2 className="mt-3 font-display text-2xl text-slate-900">{session || '暂无可选对象'}</h2>
         </div>
         <div className="text-right">
           <p className="text-xs uppercase tracking-[0.18em] text-slate-400">申报次数</p>
