@@ -156,7 +156,7 @@ const sharedDataApiPrefixes = [
   '/api/property-category-dictionary',
 ];
 
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 app.get('/api/data-source', (_req, res) => {
   res.json({

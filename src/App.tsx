@@ -325,7 +325,6 @@ const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
 const parseWorkbookFile = async (
   file: File,
   propertyCategoryDictionary: PropertyCategoryEntry[],
-  auditorTeamDictionary: AuditorTeamEntry[],
 ): Promise<ParsedWorkbook> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
@@ -345,17 +344,7 @@ const parseWorkbookFile = async (
           record['一审审核人'] ??
           '',
       ).trim(),
-      auditorTeam: resolveAuditorTeam(
-        String(
-          record['第一次在线审核人'] ??
-            record['审核人'] ??
-            record['第一次线审审核人'] ??
-            record['一审审核人'] ??
-            '',
-        ),
-        String(record['审核团队'] ?? record['团队'] ?? ''),
-        auditorTeamDictionary,
-      ),
+      auditorTeam: String(record['审核团队'] ?? record['团队'] ?? '').trim(),
       session: String(record['场次'] ?? '').trim(),
       batch: String(record['批次'] ?? '').trim(),
       category: resolveCategory(
@@ -2487,7 +2476,7 @@ function App() {
     setError('');
 
     try {
-      const parsed = await parseWorkbookFile(file, propertyCategoryDictionary, auditorTeamDictionary);
+      const parsed = await parseWorkbookFile(file, propertyCategoryDictionary);
       const nextDataset = await mergeSharedDataset(parsed);
       setDataset(nextDataset);
       setOverviewStartDateFilter(ALL_OPTION);
