@@ -485,6 +485,8 @@ const parseAuditorTeamDictionaryFile = async (file: File): Promise<AuditorTeamEn
 const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 const formatInteger = (value: number) => value.toLocaleString('zh-CN');
 const formatDateDisplay = (value: string) => (value === ALL_OPTION ? '' : value);
+const formatMultiFilterDisplay = (values: string[], emptyLabel = ALL_OPTION) =>
+  values.length === 0 ? emptyLabel : values.length <= 2 ? values.join('、') : `已选 ${values.length} 项`;
 const parseDateValue = (value: string) => (value && value !== ALL_OPTION ? parseISO(value) : undefined);
 const formatDateTime = (value: string) => (value ? new Date(value).toLocaleString('zh-CN') : '未导入');
 
@@ -507,7 +509,7 @@ type FilterCriteria = {
   endDate: string;
   session: string | string[];
   batch: string | string[];
-  attribute: string;
+  attribute: string | string[];
   auditor?: string;
   auditorTeam?: string;
   auditorTeamDictionary?: AuditorTeamEntry[];
@@ -588,7 +590,9 @@ const filterRowsByCriteria = (rows: ImportedRow[], criteria: FilterCriteria) =>
     const batchMatch = Array.isArray(criteria.batch)
       ? criteria.batch.length === 0 || criteria.batch.includes(row.batch)
       : criteria.batch === ALL_OPTION || row.batch === criteria.batch;
-    const attributeMatch = criteria.attribute === ALL_OPTION || row.attribute === criteria.attribute;
+    const attributeMatch = Array.isArray(criteria.attribute)
+      ? criteria.attribute.length === 0 || criteria.attribute.includes(row.attribute)
+      : criteria.attribute === ALL_OPTION || row.attribute === criteria.attribute;
     const auditorMatch = !criteria.auditor || criteria.auditor === ALL_OPTION || row.auditor === criteria.auditor;
     const rowAuditorTeam = resolveAuditorTeam(
       row.auditor ?? '',
@@ -617,9 +621,12 @@ const filterEfficiencyRows = (
   startDate: string,
   endDate: string,
   team: string,
+  sessions: string[],
 ) =>
   filterRowsByDateRange(rows, startDate, endDate).filter(
-    (row) => team === ALL_OPTION || row.team === team,
+    (row) =>
+      (team === ALL_OPTION || row.team === team) &&
+      (sessions.length === 0 || sessions.includes(row.session)),
   );
 
 const resolveWorkplace = (team: string) => {
@@ -2024,9 +2031,9 @@ function App() {
   const [overviewBatchFilter, setOverviewBatchFilter] = useState<string[]>([]);
   const [attributeStartDateFilter, setAttributeStartDateFilter] = useState(ALL_OPTION);
   const [attributeEndDateFilter, setAttributeEndDateFilter] = useState(ALL_OPTION);
-  const [attributeSessionFilter, setAttributeSessionFilter] = useState(ALL_OPTION);
-  const [attributeBatchFilter, setAttributeBatchFilter] = useState(ALL_OPTION);
-  const [attributeFilter, setAttributeFilter] = useState(ALL_OPTION);
+  const [attributeSessionFilter, setAttributeSessionFilter] = useState<string[]>([]);
+  const [attributeBatchFilter, setAttributeBatchFilter] = useState<string[]>([]);
+  const [attributeFilter, setAttributeFilter] = useState<string[]>([]);
   const [compareStartDateFilter, setCompareStartDateFilter] = useState(ALL_OPTION);
   const [compareEndDateFilter, setCompareEndDateFilter] = useState(ALL_OPTION);
   const [compareDimension, setCompareDimension] = useState<CompareDimension>('session');
@@ -2052,6 +2059,7 @@ function App() {
   const [efficiencyStartDateFilter, setEfficiencyStartDateFilter] = useState(ALL_OPTION);
   const [efficiencyEndDateFilter, setEfficiencyEndDateFilter] = useState(ALL_OPTION);
   const [efficiencyTeamFilter, setEfficiencyTeamFilter] = useState(ALL_OPTION);
+  const [efficiencySessionFilter, setEfficiencySessionFilter] = useState<string[]>([]);
   const [efficiencyEmployeeFilter, setEfficiencyEmployeeFilter] = useState(ALL_OPTION);
   const [efficiencyTimeDimension, setEfficiencyTimeDimension] = useState<EfficiencyTimeDimension>('day');
   const [error, setError] = useState('');
@@ -2138,6 +2146,10 @@ function App() {
     () => createStringOptions<EfficiencyRow>(efficiencyDataset.rows, (row) => row.team),
     [efficiencyDataset.rows],
   );
+  const efficiencySessionOptions = useMemo(
+    () => createStringOptions<EfficiencyRow>(efficiencyDataset.rows, (row) => row.session),
+    [efficiencyDataset.rows],
+  );
   const qualityCoverage = useMemo(() => getDateCoverage(dataset.rows), [dataset.rows]);
   const efficiencyCoverage = useMemo(() => getDateCoverage(efficiencyDataset.rows), [efficiencyDataset.rows]);
   const latestDataDate = useMemo(
@@ -2189,8 +2201,15 @@ function App() {
         efficiencyStartDateFilter,
         efficiencyEndDateFilter,
         efficiencyTeamFilter,
+        efficiencySessionFilter,
       ),
-    [efficiencyDataset.rows, efficiencyEndDateFilter, efficiencyStartDateFilter, efficiencyTeamFilter],
+    [
+      efficiencyDataset.rows,
+      efficiencyEndDateFilter,
+      efficiencySessionFilter,
+      efficiencyStartDateFilter,
+      efficiencyTeamFilter,
+    ],
   );
   const efficiencyEmployeeOptions = useMemo(
     () => createStringOptions<EfficiencyRow>(filteredEfficiencyRows, (row) => row.employee),
@@ -2419,6 +2438,7 @@ function App() {
     selectedDeepseekModel === CUSTOM_MODEL_OPTION
       ? customDeepseekModel.trim()
       : selectedDeepseekModel;
+  const isOverviewView = activeView === 'overview';
   const toggleCompareQualityMetric = (metric: CompareQualityMetric) => {
     setCompareQualityMetrics((current) => {
       if (current.includes(metric)) {
@@ -2485,9 +2505,9 @@ function App() {
       setOverviewBatchFilter([]);
       setAttributeStartDateFilter(ALL_OPTION);
       setAttributeEndDateFilter(ALL_OPTION);
-      setAttributeSessionFilter(ALL_OPTION);
-      setAttributeBatchFilter(ALL_OPTION);
-      setAttributeFilter(ALL_OPTION);
+      setAttributeSessionFilter([]);
+      setAttributeBatchFilter([]);
+      setAttributeFilter([]);
       setCompareStartDateFilter(ALL_OPTION);
       setCompareEndDateFilter(ALL_OPTION);
       setCompareSessionAFilter('');
@@ -2515,9 +2535,9 @@ function App() {
       setOverviewBatchFilter([]);
       setAttributeStartDateFilter(ALL_OPTION);
       setAttributeEndDateFilter(ALL_OPTION);
-      setAttributeSessionFilter(ALL_OPTION);
-      setAttributeBatchFilter(ALL_OPTION);
-      setAttributeFilter(ALL_OPTION);
+      setAttributeSessionFilter([]);
+      setAttributeBatchFilter([]);
+      setAttributeFilter([]);
       setCompareStartDateFilter(ALL_OPTION);
       setCompareEndDateFilter(ALL_OPTION);
       setCompareSessionAFilter('');
@@ -2551,6 +2571,7 @@ function App() {
       setEfficiencyStartDateFilter(ALL_OPTION);
       setEfficiencyEndDateFilter(ALL_OPTION);
       setEfficiencyTeamFilter(ALL_OPTION);
+      setEfficiencySessionFilter([]);
       setEfficiencyEmployeeFilter(ALL_OPTION);
       setActiveView('efficiency');
     } catch (err) {
@@ -2569,6 +2590,7 @@ function App() {
       setEfficiencyStartDateFilter(ALL_OPTION);
       setEfficiencyEndDateFilter(ALL_OPTION);
       setEfficiencyTeamFilter(ALL_OPTION);
+      setEfficiencySessionFilter([]);
       setEfficiencyEmployeeFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空人效数据失败。');
@@ -2844,43 +2866,43 @@ function App() {
             animate={{ opacity: 1, y: 0 }}
             className="overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur"
           >
-          <div className="p-5 lg:p-6">
-            <div className="rounded-[28px] border border-slate-200 bg-white/90 p-4 shadow-[0_12px_35px_rgba(15,23,42,0.04)]">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className={isOverviewView ? 'p-5 lg:p-6' : 'p-3 lg:p-4'}>
+            <div className={`${isOverviewView ? 'rounded-[28px] p-4' : 'rounded-[22px] p-3'} border border-slate-200 bg-white/90 shadow-[0_12px_35px_rgba(15,23,42,0.04)]`}>
+              <div className={`${isOverviewView ? 'gap-4' : 'gap-3'} flex flex-col xl:flex-row xl:items-center xl:justify-between`}>
                 <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                    <Layers3 size={22} />
+                  <div className={`${isOverviewView ? 'h-12 w-12 rounded-2xl' : 'h-10 w-10 rounded-xl'} flex shrink-0 items-center justify-center bg-slate-900 text-white`}>
+                    <Layers3 size={isOverviewView ? 22 : 18} />
                   </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <h1 className="font-display text-2xl font-semibold text-slate-900">预质检质量看板</h1>
+                      <h1 className={`${isOverviewView ? 'text-2xl' : 'text-xl'} font-display font-semibold text-slate-900`}>预质检质量看板</h1>
                       <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
                         {isLoading ? '加载中' : '每周复用'}
                       </span>
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">
+                    <p className={`${isOverviewView ? 'block' : 'hidden xl:block'} mt-1 text-sm text-slate-500`}>
                       聚焦举证准确率、精准通过率、模棱两可率与拒绝率，按场次、批次、属性项动态拆解。
                     </p>
                   </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px]">
-                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-4 py-3">
+                <div className={`grid gap-2 sm:grid-cols-2 ${isOverviewView ? 'xl:min-w-[420px]' : 'xl:min-w-[360px]'}`}>
+                  <div className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-emerald-100 bg-emerald-50/80`}>
                     <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
                       <CalendarDays size={14} />
                       最新数据
                     </div>
-                    <p className="mt-1 font-display text-xl font-semibold text-slate-950">
+                    <p className={`${isOverviewView ? 'text-xl' : 'text-base'} mt-1 font-display font-semibold text-slate-950`}>
                       {latestDataDate || '暂无数据'}
                     </p>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3">
+                  <div className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-slate-200 bg-slate-50/90`}>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">可查询区间</p>
                     <p className="mt-1 text-sm font-semibold text-slate-800">
                       {overallCoverage.start && overallCoverage.end
                         ? `${overallCoverage.start} ~ ${overallCoverage.end}`
                         : '暂无可查询数据'}
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className={`${isOverviewView ? 'block' : 'hidden'} mt-1 text-xs text-slate-500`}>
                       质量 {qualityCoverage.end || '-'} / 人效 {efficiencyCoverage.end || '-'}
                     </p>
                   </div>
@@ -2894,8 +2916,8 @@ function App() {
               ) : null}
             </div>
 
-            <div className="mt-4 rounded-[28px] bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] p-4 text-white">
-              <div className="flex flex-col gap-4">
+            <div className={`${isOverviewView ? 'mt-4 rounded-[28px] p-4' : 'mt-3 rounded-[22px] p-3'} bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] text-white`}>
+              <div className={`${isOverviewView ? 'gap-4' : 'gap-3'} flex flex-col`}>
                 {activeView === 'compare' ? (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)] xl:items-end">
                     <DateRangeFilter
@@ -2923,10 +2945,11 @@ function App() {
                         setCompareStartDateFilter(ALL_OPTION);
                         setCompareEndDateFilter(ALL_OPTION);
                       }}
+                      compact={!isOverviewView}
                     />
                   </div>
                 ) : activeView === 'efficiency' ? (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_minmax(170px,0.8fr)_minmax(180px,0.8fr)] xl:items-end">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.7fr)_minmax(180px,0.8fr)_minmax(170px,0.75fr)_minmax(170px,0.75fr)_minmax(160px,0.7fr)] xl:items-end">
                     <DateRangeFilter
                       label="人效日期区间"
                       startValue={efficiencyStartDateFilter}
@@ -2952,6 +2975,7 @@ function App() {
                         setEfficiencyStartDateFilter(ALL_OPTION);
                         setEfficiencyEndDateFilter(ALL_OPTION);
                       }}
+                      compact={!isOverviewView}
                     />
                     <FilterSelect
                       label="团队"
@@ -2959,6 +2983,14 @@ function App() {
                       value={efficiencyTeamFilter}
                       options={efficiencyTeamOptions}
                       onChange={setEfficiencyTeamFilter}
+                      compact={!isOverviewView}
+                    />
+                    <MultiFilterSelect
+                      label="场次"
+                      icon={<Layers3 size={16} />}
+                      value={efficiencySessionFilter}
+                      options={efficiencySessionOptions}
+                      onChange={setEfficiencySessionFilter}
                     />
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
                       <p className="font-medium text-white">当前人效记录</p>
@@ -2968,7 +3000,7 @@ function App() {
                     </div>
                   </div>
                 ) : activeView === 'ai' || activeView === 'import' || activeView === 'dictionary' ? (
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-slate-200">
+                  <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-slate-200">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="font-medium text-white">
@@ -2978,7 +3010,7 @@ function App() {
                               ? '数据导入与记录区'
                               : '属性项分类字典管理区'}
                         </p>
-                        <p className="mt-1 text-xs leading-6 text-slate-300">
+                        <p className="mt-0.5 text-xs leading-5 text-slate-300">
                           {activeView === 'ai'
                             ? 'AI 分析将读取质量数据与人效数据，先沉淀规则化洞察，后续可接入大模型生成周报。'
                             : activeView === 'import'
@@ -3022,22 +3054,23 @@ function App() {
                         setAttributeStartDateFilter(ALL_OPTION);
                         setAttributeEndDateFilter(ALL_OPTION);
                       }}
+                      compact={!isOverviewView}
                     />
-                    <FilterSelect
+                    <MultiFilterSelect
                       label="场次"
                       icon={<Layers3 size={16} />}
                       value={attributeSessionFilter}
                       options={options.sessions}
                       onChange={setAttributeSessionFilter}
                     />
-                    <FilterSelect
+                    <MultiFilterSelect
                       label="批次"
                       icon={<Boxes size={16} />}
                       value={attributeBatchFilter}
                       options={options.batches}
                       onChange={setAttributeBatchFilter}
                     />
-                    <FilterSelect
+                    <MultiFilterSelect
                       label="属性项"
                       icon={<Tags size={16} />}
                       value={attributeFilter}
@@ -3090,7 +3123,7 @@ function App() {
                   </div>
                 )}
                 {activeView === 'compare' ? (
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
                     {compareDimension !== 'session' ? (
                       <FilterSelect
                         label="场次"
@@ -3098,6 +3131,7 @@ function App() {
                         value={compareSessionFilter}
                         options={options.sessions}
                         onChange={setCompareSessionFilter}
+                        compact={!isOverviewView}
                       />
                     ) : null}
                     {compareDimension !== 'batch' ? (
@@ -3107,6 +3141,7 @@ function App() {
                         value={compareBatchFilter}
                         options={options.batches}
                         onChange={setCompareBatchFilter}
+                        compact={!isOverviewView}
                       />
                     ) : null}
                     {compareDimension !== 'attribute' ? (
@@ -3116,6 +3151,7 @@ function App() {
                         value={compareAttributeFilter}
                         options={options.attributes}
                         onChange={setCompareAttributeFilter}
+                        compact={!isOverviewView}
                       />
                     ) : null}
                     {compareDimension !== 'auditor' ? (
@@ -3125,6 +3161,7 @@ function App() {
                         value={compareAuditorFilter}
                         options={options.auditors}
                         onChange={setCompareAuditorFilter}
+                        compact={!isOverviewView}
                       />
                     ) : null}
                     {compareDimension !== 'auditorTeam' ? (
@@ -3134,11 +3171,12 @@ function App() {
                         value={compareAuditorTeamFilter}
                         options={options.auditorTeams}
                         onChange={setCompareAuditorTeamFilter}
+                        compact={!isOverviewView}
                       />
                     ) : null}
                   </div>
                 ) : null}
-                <details className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                <details className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-white/10 bg-white/5 text-sm text-slate-200`}>
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium marker:content-none">
                     当前口径
                     <ChevronDown size={16} className="shrink-0" />
@@ -3319,8 +3357,8 @@ function App() {
                     {formatDateDisplay(compareStartDateFilter) || '全部日期'} ~ {formatDateDisplay(compareEndDateFilter) || '全部日期'}
                   </span>
                 </div>
-                <div className="mb-6 rounded-3xl border border-slate-100 bg-slate-50/80 p-4">
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">对比对象</p>
                       <p className="mt-1 text-xs text-slate-400">选择本次要对比的维度，再选择 A / B 两个对象。</p>
@@ -3346,26 +3384,28 @@ function App() {
                       })}
                     </div>
                   </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                  <FilterSelect
-                    label={`${compareDimensionConfig.label} A`}
-                    icon={<span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />}
-                    value={compareA}
-                    options={compareDimensionOptions}
-                    onChange={setCompareAFilter}
-                    tone="light"
-                  />
-                  <FilterSelect
-                    label={`${compareDimensionConfig.label} B`}
-                    icon={<span className="h-2.5 w-2.5 rounded-full bg-orange-500" />}
-                    value={compareB}
-                    options={compareDimensionOptions}
-                    onChange={setCompareBFilter}
-                    tone="light"
-                  />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <FilterSelect
+                      label={`${compareDimensionConfig.label} A`}
+                      icon={<span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />}
+                      value={compareA}
+                      options={compareDimensionOptions}
+                      onChange={setCompareAFilter}
+                      tone="light"
+                      compact
+                    />
+                    <FilterSelect
+                      label={`${compareDimensionConfig.label} B`}
+                      icon={<span className="h-2.5 w-2.5 rounded-full bg-orange-500" />}
+                      value={compareB}
+                      options={compareDimensionOptions}
+                      onChange={setCompareBFilter}
+                      tone="light"
+                      compact
+                    />
                   </div>
                 </div>
-                <div className="mb-6 rounded-3xl border border-slate-100 bg-slate-50/80 p-4">
+                <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">质量维度</p>
@@ -3446,9 +3486,11 @@ function App() {
                   <div className="flex h-full flex-col rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
                     <div>
                       <p className="text-sm text-slate-500">当前属性项</p>
-                      <p className="mt-3 font-display text-3xl text-slate-900">{attributeFilter === ALL_OPTION ? '全部属性项' : attributeFilter}</p>
+                      <p className="mt-3 font-display text-3xl text-slate-900">
+                        {formatMultiFilterDisplay(attributeFilter, '全部属性项')}
+                      </p>
                     </div>
-                    <p className="mt-5 text-sm text-slate-500">建议先在顶部筛选区选择一个具体属性项，再查看下方的时间、场次和批次表现。</p>
+                    <p className="mt-5 text-sm text-slate-500">可在顶部筛选区选择一个或多个属性项，再查看下方的时间、场次和批次表现。</p>
                   </div>
                 </motion.div>
                 <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
@@ -4582,6 +4624,7 @@ function FilterSelect({
   onChange,
   icon,
   tone = 'dark',
+  compact = false,
 }: {
   label: string;
   value: string;
@@ -4589,11 +4632,12 @@ function FilterSelect({
   onChange: (value: string) => void;
   icon: React.ReactNode;
   tone?: 'dark' | 'light';
+  compact?: boolean;
 }) {
   return (
     <label className="block">
       <span
-        className={`mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${
+        className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${
           tone === 'dark' ? 'text-slate-400' : 'text-slate-500'
         }`}
       >
@@ -4603,7 +4647,7 @@ function FilterSelect({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className={`dashboard-select w-full rounded-2xl px-4 py-2.5 text-sm outline-none transition ${
+        className={`dashboard-select w-full text-sm outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-4 py-2.5'} ${
           tone === 'dark'
             ? 'border border-white/10 bg-white/8 text-white focus:border-white/40'
             : 'border border-slate-200 bg-white text-slate-900 focus:border-slate-400'
@@ -4725,17 +4769,19 @@ function WeekQuickSelect({
   options,
   onChange,
   onClear,
+  compact = false,
 }: {
   label: string;
   value: string;
   options: WeekOption[];
   onChange: (week: WeekOption) => void;
   onClear: () => void;
+  compact?: boolean;
 }) {
   return (
     <label className="block">
-      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
-        <CalendarDays size={16} />
+      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400`}>
+        <CalendarDays size={compact ? 14 : 16} />
         {label}
       </span>
       <select
@@ -4752,7 +4798,9 @@ function WeekQuickSelect({
             onChange(selectedWeek);
           }
         }}
-        className="dashboard-select w-full rounded-2xl border border-white/10 bg-white/8 px-4 py-2.5 text-sm text-white outline-none transition focus:border-white/40"
+        className={`dashboard-select w-full border border-white/10 bg-white/8 text-sm text-white outline-none transition focus:border-white/40 ${
+          compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-4 py-2.5'
+        }`}
       >
         <option value={ALL_OPTION}>
           全部周
@@ -4938,8 +4986,8 @@ function DateRangeFilter({
 
   return (
     <div className={`relative ${compact ? '' : 'md:col-span-2 xl:col-span-2'}`} ref={containerRef}>
-      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
-        <CalendarDays size={16} />
+      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400`}>
+        <CalendarDays size={compact ? 14 : 16} />
         {label}
       </span>
       <div
@@ -4956,17 +5004,17 @@ function DateRangeFilter({
             setIsOpen((value) => !value);
           }
         }}
-        className={`flex w-full items-center rounded-2xl px-5 py-3 text-left outline-none transition ${
+        className={`flex w-full items-center text-left outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-5 py-3'} ${
           compact
             ? 'border border-white/10 bg-white/[0.08] text-white shadow-inner shadow-white/[0.03] hover:border-white/30'
             : 'border border-[#4B8DFF] bg-white text-slate-800 shadow-[0_8px_24px_rgba(37,99,235,0.12)] hover:border-[#2f7cff]'
         }`}
       >
-        <span className={`min-w-0 flex-1 text-[15px] font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
           {formatDateDisplay(startValue) || '开始日期'}
         </span>
-        <span className="mx-4 shrink-0 text-slate-400">→</span>
-        <span className={`min-w-0 flex-1 text-[15px] font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
+        <span className={`${compact ? 'mx-2' : 'mx-4'} shrink-0 text-slate-400`}>→</span>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
           {formatDateDisplay(endValue) || '结束日期'}
         </span>
         <button
@@ -4975,7 +5023,7 @@ function DateRangeFilter({
             event.stopPropagation();
             onClear();
           }}
-          className={`ml-3 flex h-7 w-7 items-center justify-center rounded-full transition ${
+          className={`${compact ? 'ml-2 h-6 w-6' : 'ml-3 h-7 w-7'} flex items-center justify-center rounded-full transition ${
             compact
               ? hasValue
                 ? 'bg-white/20 text-white hover:bg-white/30'
