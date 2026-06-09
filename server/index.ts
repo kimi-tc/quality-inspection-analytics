@@ -9,6 +9,8 @@ dotenv.config();
 
 type ImportedRow = {
   date: string;
+  auditor?: string;
+  auditorTeam?: string;
   session: string;
   batch: string;
   category: string;
@@ -67,6 +69,11 @@ type PropertyCategoryEntry = {
   category: string;
 };
 
+type AuditorTeamEntry = {
+  auditorName: string;
+  team: string;
+};
+
 type AiAnalysisRequest = {
   report?: string;
   model?: string;
@@ -101,6 +108,8 @@ const dataFile = path.join(dataDir, 'shared-dataset.json');
 const efficiencyDataFile = path.join(dataDir, 'efficiency-dataset.json');
 const propertyCategoryDictionaryFile = path.join(dataDir, 'property-category-dictionary.json');
 const propertyCategorySeedFile = path.join(rootDir, 'config', 'property-category-dictionary.seed.json');
+const auditorTeamDictionaryFile = path.join(dataDir, 'auditor-team-dictionary.json');
+const auditorTeamSeedFile = path.join(rootDir, 'config', 'auditor-team-dictionary.seed.json');
 const distDir = path.join(rootDir, 'dist');
 
 const emptyDataset: SharedDataset = {
@@ -121,6 +130,16 @@ const readSeedPropertyCategoryDictionary = async (): Promise<PropertyCategoryEnt
   try {
     const content = await fs.readFile(propertyCategorySeedFile, 'utf8');
     const parsed = JSON.parse(content) as PropertyCategoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const readSeedAuditorTeamDictionary = async (): Promise<AuditorTeamEntry[]> => {
+  try {
+    const content = await fs.readFile(auditorTeamSeedFile, 'utf8');
+    const parsed = JSON.parse(content) as AuditorTeamEntry[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -191,6 +210,8 @@ app.use(async (req, res, next) => {
 const buildRowKey = (row: ImportedRow) =>
   [
     row.date,
+    row.auditor ?? '',
+    row.auditorTeam ?? '',
     row.session,
     row.batch,
     row.category,
@@ -223,6 +244,12 @@ const mergeRows = (existingRows: ImportedRow[], incomingRows: ImportedRow[]) => 
 
   return [...rowMap.values()].sort((a, b) => {
     if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if ((a.auditor ?? '') !== (b.auditor ?? '')) {
+      return (a.auditor ?? '').localeCompare(b.auditor ?? '', 'zh-CN');
+    }
+    if ((a.auditorTeam ?? '') !== (b.auditorTeam ?? '')) {
+      return (a.auditorTeam ?? '').localeCompare(b.auditorTeam ?? '', 'zh-CN');
+    }
     if (a.session !== b.session) return a.session.localeCompare(b.session, 'zh-CN');
     if (a.batch !== b.batch) return a.batch.localeCompare(b.batch, 'zh-CN');
     return a.attribute.localeCompare(b.attribute, 'zh-CN');
@@ -275,6 +302,17 @@ const ensurePropertyCategoryDictionaryFile = async () => {
   } catch {
     const seed = await readSeedPropertyCategoryDictionary();
     await fs.writeFile(propertyCategoryDictionaryFile, JSON.stringify(seed, null, 2), 'utf8');
+  }
+};
+
+const ensureAuditorTeamDictionaryFile = async () => {
+  await fs.mkdir(dataDir, { recursive: true });
+
+  try {
+    await fs.access(auditorTeamDictionaryFile);
+  } catch {
+    const seed = await readSeedAuditorTeamDictionary();
+    await fs.writeFile(auditorTeamDictionaryFile, JSON.stringify(seed, null, 2), 'utf8');
   }
 };
 
@@ -352,6 +390,39 @@ const writePropertyCategoryDictionary = async (entries: PropertyCategoryEntry[])
     .filter((entry) => entry.propertyName && entry.category);
 
   await fs.writeFile(propertyCategoryDictionaryFile, JSON.stringify(normalizedEntries, null, 2), 'utf8');
+};
+
+const readAuditorTeamDictionary = async (): Promise<AuditorTeamEntry[]> => {
+  await ensureAuditorTeamDictionaryFile();
+  const content = await fs.readFile(auditorTeamDictionaryFile, 'utf8');
+
+  try {
+    const parsed = JSON.parse(content) as AuditorTeamEntry[];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((entry) => ({
+        auditorName: String(entry.auditorName ?? '').trim(),
+        team: String(entry.team ?? '').trim(),
+      }))
+      .filter((entry) => entry.auditorName && entry.team);
+  } catch {
+    return [];
+  }
+};
+
+const writeAuditorTeamDictionary = async (entries: AuditorTeamEntry[]) => {
+  await ensureAuditorTeamDictionaryFile();
+  const normalizedEntries = entries
+    .map((entry) => ({
+      auditorName: String(entry.auditorName ?? '').trim(),
+      team: String(entry.team ?? '').trim(),
+    }))
+    .filter((entry) => entry.auditorName && entry.team);
+
+  await fs.writeFile(auditorTeamDictionaryFile, JSON.stringify(normalizedEntries, null, 2), 'utf8');
 };
 
 const createImportRecord = (
@@ -458,10 +529,33 @@ app.post('/api/property-category-dictionary/reset', async (_req, res) => {
   res.json({ entries: seed });
 });
 
+app.get('/api/auditor-team-dictionary', async (_req, res) => {
+  const dictionary = await readAuditorTeamDictionary();
+  res.json({ entries: dictionary });
+});
+
+app.put('/api/auditor-team-dictionary', async (req, res) => {
+  const body = req.body as { entries?: AuditorTeamEntry[] };
+
+  if (!Array.isArray(body.entries)) {
+    return res.status(400).json({ message: 'entries is required' });
+  }
+
+  await writeAuditorTeamDictionary(body.entries);
+  const dictionary = await readAuditorTeamDictionary();
+  res.json({ entries: dictionary });
+});
+
+app.post('/api/auditor-team-dictionary/reset', async (_req, res) => {
+  const seed = await readSeedAuditorTeamDictionary();
+  await writeAuditorTeamDictionary(seed);
+  res.json({ entries: seed });
+});
+
 app.post('/api/ai-analysis', async (req, res) => {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   const baseUrl = process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com';
-  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 60000);
+  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 180000);
 
   if (!apiKey) {
     return res.status(503).json({
@@ -572,5 +666,6 @@ app.listen(port, async () => {
   await ensureDataFile();
   await ensureEfficiencyDataFile();
   await ensurePropertyCategoryDictionaryFile();
+  await ensureAuditorTeamDictionaryFile();
   console.log(`Shared dataset API running on http://127.0.0.1:${port}`);
 });

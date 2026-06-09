@@ -2,6 +2,8 @@ import React from 'react';
 
 export interface ImportedRow {
   date: string;
+  auditor?: string;
+  auditorTeam?: string;
   session: string;
   batch: string;
   category: string;
@@ -66,6 +68,15 @@ export interface PropertyCategoryEntry {
 
 export interface PropertyCategoryDictionaryResponse {
   entries: PropertyCategoryEntry[];
+}
+
+export interface AuditorTeamEntry {
+  auditorName: string;
+  team: string;
+}
+
+export interface AuditorTeamDictionaryResponse {
+  entries: AuditorTeamEntry[];
 }
 
 export interface AiAnalysisResponse {

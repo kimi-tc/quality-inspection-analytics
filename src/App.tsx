@@ -49,6 +49,8 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import {
+  AuditorTeamDictionaryResponse,
+  AuditorTeamEntry,
   EfficiencyDatasetResponse,
   EfficiencyRow,
   ImportRecord,
@@ -100,7 +102,7 @@ const ALL_OPTION = '全部';
 const AMBIGUOUS_RATE_TARGET = 0.07;
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
 type CompareQualityMetric = 'proofAccuracy' | 'exactPassRate' | 'ambiguousRate' | 'rejectRate';
-type CompareDimension = 'session' | 'attribute' | 'batch';
+type CompareDimension = 'session' | 'attribute' | 'batch' | 'auditor' | 'auditorTeam';
 const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
 const CATEGORY_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 const SESSION_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#6366f1', '#f43f5e', '#64748b', '#84cc16', '#a855f7'];
@@ -122,6 +124,18 @@ const COMPARE_DIMENSIONS: Array<{ key: CompareDimension; label: string; title: s
     label: '批次',
     title: '批次 A / 批次 B 质量趋势',
     description: '在相同日期、场次和属性项条件下，按自然日对比两个批次的质量变化。',
+  },
+  {
+    key: 'auditor',
+    label: '审核人',
+    title: '审核人 A / 审核人 B 质量趋势',
+    description: '在相同日期、场次、批次和属性项条件下，按自然日对比两个审核人的质量变化。',
+  },
+  {
+    key: 'auditorTeam',
+    label: '团队',
+    title: '团队 A / 团队 B 质量趋势',
+    description: '在相同日期、场次、批次和属性项条件下，按自然日对比两个审核团队的质量变化。',
   },
 ];
 const COMPARE_QUALITY_METRICS: Array<{
@@ -170,6 +184,18 @@ const normalizeDictionaryCategory = (value: string) => {
 const buildDictionaryMap = (entries: PropertyCategoryEntry[]) =>
   new Map(entries.map((entry) => [normalizePropertyName(entry.propertyName), normalizeDictionaryCategory(entry.category)]));
 
+const normalizeAuditorName = (value: string) => value.trim();
+
+const buildAuditorTeamMap = (entries: AuditorTeamEntry[]) =>
+  new Map(entries.map((entry) => [normalizeAuditorName(entry.auditorName), entry.team.trim()]));
+
+const resolveAuditorTeam = (auditor: string, explicitTeam: string, dictionary: AuditorTeamEntry[]) => {
+  const normalizedTeam = explicitTeam.trim();
+  const dictionaryTeam = buildAuditorTeamMap(dictionary).get(normalizeAuditorName(auditor));
+
+  return dictionaryTeam ?? normalizedTeam;
+};
+
 const resolveCategory = (category: string, attribute: string, dictionary: PropertyCategoryEntry[]) => {
   const normalizedAttribute = attribute.trim();
   const normalizedCategory = category.trim();
@@ -200,7 +226,12 @@ const toNumber = (value: unknown): number => {
     return value;
   }
 
-  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  const parsed = Number(
+    String(value ?? '')
+      .replace(/,/g, '')
+      .replace(/%/g, '')
+      .trim(),
+  );
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
@@ -231,9 +262,13 @@ const normalizeDate = (value: unknown): string => {
 const sheetToRows = (sheet: XLSX.WorkSheet) => {
   const cellAddresses = Object.keys(sheet).filter((key) => !key.startsWith('!'));
   if (cellAddresses.length) {
-    const ranges = cellAddresses.map((address) => XLSX.utils.decode_cell(address));
-    const maxRow = Math.max(...ranges.map((cell) => cell.r));
-    const maxCol = Math.max(...ranges.map((cell) => cell.c));
+    let maxRow = 0;
+    let maxCol = 0;
+    for (const address of cellAddresses) {
+      const cell = XLSX.utils.decode_cell(address);
+      if (cell.r > maxRow) maxRow = cell.r;
+      if (cell.c > maxCol) maxCol = cell.c;
+    }
     sheet['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow, c: maxCol } });
   }
 
@@ -290,6 +325,7 @@ const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
 const parseWorkbookFile = async (
   file: File,
   propertyCategoryDictionary: PropertyCategoryEntry[],
+  auditorTeamDictionary: AuditorTeamEntry[],
 ): Promise<ParsedWorkbook> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
@@ -302,6 +338,24 @@ const parseWorkbookFile = async (
   const rows: ImportedRow[] = matched.json
     .map((record) => ({
       date: normalizeDate(record['第一次线审完成时间']),
+      auditor: String(
+        record['第一次在线审核人'] ??
+          record['审核人'] ??
+          record['第一次线审审核人'] ??
+          record['一审审核人'] ??
+          '',
+      ).trim(),
+      auditorTeam: resolveAuditorTeam(
+        String(
+          record['第一次在线审核人'] ??
+            record['审核人'] ??
+            record['第一次线审审核人'] ??
+            record['一审审核人'] ??
+            '',
+        ),
+        String(record['审核团队'] ?? record['团队'] ?? ''),
+        auditorTeamDictionary,
+      ),
       session: String(record['场次'] ?? '').trim(),
       batch: String(record['批次'] ?? '').trim(),
       category: resolveCategory(
@@ -409,6 +463,36 @@ const parsePropertyCategoryDictionaryFile = async (file: File): Promise<Property
   throw new Error('未找到分类字典字段，请确认表头包含：属性项、属性项分类。');
 };
 
+const parseAuditorTeamDictionaryFile = async (file: File): Promise<AuditorTeamEntry[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const json = sheetToRows(sheet);
+
+    if (!json.length) {
+      continue;
+    }
+
+    const headerSet = new Set(Object.keys(json[0]));
+    const auditorHeader = ['审核人', '第一次在线审核人', '员工姓名'].find((header) => headerSet.has(header));
+    const teamHeader = ['团队', '审核团队'].find((header) => headerSet.has(header));
+    if (!auditorHeader || !teamHeader) {
+      continue;
+    }
+
+    return json
+      .map((record) => ({
+        auditorName: String(record[auditorHeader] ?? '').trim(),
+        team: String(record[teamHeader] ?? '').trim(),
+      }))
+      .filter((entry) => entry.auditorName && entry.team);
+  }
+
+  throw new Error('未找到审核人团队字典字段，请确认表头包含：审核人、团队。');
+};
+
 const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 const formatInteger = (value: number) => value.toLocaleString('zh-CN');
 const formatDateDisplay = (value: string) => (value === ALL_OPTION ? '' : value);
@@ -435,6 +519,9 @@ type FilterCriteria = {
   session: string | string[];
   batch: string | string[];
   attribute: string;
+  auditor?: string;
+  auditorTeam?: string;
+  auditorTeamDictionary?: AuditorTeamEntry[];
 };
 
 type WeekOption = {
@@ -513,8 +600,16 @@ const filterRowsByCriteria = (rows: ImportedRow[], criteria: FilterCriteria) =>
       ? criteria.batch.length === 0 || criteria.batch.includes(row.batch)
       : criteria.batch === ALL_OPTION || row.batch === criteria.batch;
     const attributeMatch = criteria.attribute === ALL_OPTION || row.attribute === criteria.attribute;
+    const auditorMatch = !criteria.auditor || criteria.auditor === ALL_OPTION || row.auditor === criteria.auditor;
+    const rowAuditorTeam = resolveAuditorTeam(
+      row.auditor ?? '',
+      row.auditorTeam ?? '',
+      criteria.auditorTeamDictionary ?? [],
+    );
+    const auditorTeamMatch =
+      !criteria.auditorTeam || criteria.auditorTeam === ALL_OPTION || rowAuditorTeam === criteria.auditorTeam;
 
-    return startMatch && endMatch && sessionMatch && batchMatch && attributeMatch;
+    return startMatch && endMatch && sessionMatch && batchMatch && attributeMatch && auditorMatch && auditorTeamMatch;
   });
 
 const filterRowsByDateRange = <T extends { date: string }>(
@@ -1851,6 +1946,38 @@ const resetPropertyCategoryDictionary = async (): Promise<PropertyCategoryDictio
   return response.json();
 };
 
+const fetchAuditorTeamDictionary = async (): Promise<AuditorTeamDictionaryResponse> => {
+  const response = await fetch('/api/auditor-team-dictionary');
+  if (!response.ok) {
+    throw new Error('读取审核人团队字典失败');
+  }
+  return response.json();
+};
+
+const saveAuditorTeamDictionary = async (
+  entries: AuditorTeamEntry[],
+): Promise<AuditorTeamDictionaryResponse> => {
+  const response = await fetch('/api/auditor-team-dictionary', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entries }),
+  });
+
+  if (!response.ok) {
+    throw new Error('保存审核人团队字典失败');
+  }
+
+  return response.json();
+};
+
+const resetAuditorTeamDictionary = async (): Promise<AuditorTeamDictionaryResponse> => {
+  const response = await fetch('/api/auditor-team-dictionary/reset', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error('重置审核人团队字典失败');
+  }
+  return response.json();
+};
+
 const generateModelAnalysis = async (payload: {
   report: string;
   model: string;
@@ -1862,13 +1989,27 @@ const generateModelAnalysis = async (payload: {
   };
 }): Promise<AiAnalysisResponse> => {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 75000);
-  const response = await fetch('/api/ai-analysis', {
-    method: 'POST',
-    signal: controller.signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  }).finally(() => window.clearTimeout(timeout));
+  const timeoutMs = 180000;
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+
+  try {
+    response = await fetch('/api/ai-analysis', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`大模型分析等待超过 ${Math.round(timeoutMs / 1000)} 秒，已自动停止。请稍后重试，或切换更快的模型。`);
+    }
+
+    throw new Error('大模型接口连接失败，请确认本地/服务器后端正在运行，且当前访问地址没有跨域或网络中断。');
+  } finally {
+    window.clearTimeout(timeout);
+  }
+
   const body = await response.json().catch(() => ({ message: '大模型接口返回异常，请稍后重试。' }));
 
   if (!response.ok) {
@@ -1882,8 +2023,11 @@ function App() {
   const [dataset, setDataset] = useState<ParsedWorkbook>(emptyWorkbook);
   const [efficiencyDataset, setEfficiencyDataset] = useState<ParsedEfficiencyWorkbook>(emptyEfficiencyWorkbook);
   const [propertyCategoryDictionary, setPropertyCategoryDictionary] = useState<PropertyCategoryEntry[]>([]);
+  const [auditorTeamDictionary, setAuditorTeamDictionary] = useState<AuditorTeamEntry[]>([]);
   const [dictionaryDraft, setDictionaryDraft] = useState<PropertyCategoryEntry>({ propertyName: '', category: '' });
+  const [auditorTeamDraft, setAuditorTeamDraft] = useState<AuditorTeamEntry>({ auditorName: '', team: '' });
   const [editingDictionaryKey, setEditingDictionaryKey] = useState('');
+  const [editingAuditorTeamKey, setEditingAuditorTeamKey] = useState('');
   const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [overviewStartDateFilter, setOverviewStartDateFilter] = useState(ALL_OPTION);
   const [overviewEndDateFilter, setOverviewEndDateFilter] = useState(ALL_OPTION);
@@ -1903,6 +2047,10 @@ function App() {
   const [compareAttributeBFilter, setCompareAttributeBFilter] = useState('');
   const [compareBatchAFilter, setCompareBatchAFilter] = useState('');
   const [compareBatchBFilter, setCompareBatchBFilter] = useState('');
+  const [compareAuditorAFilter, setCompareAuditorAFilter] = useState('');
+  const [compareAuditorBFilter, setCompareAuditorBFilter] = useState('');
+  const [compareAuditorTeamAFilter, setCompareAuditorTeamAFilter] = useState('');
+  const [compareAuditorTeamBFilter, setCompareAuditorTeamBFilter] = useState('');
   const [compareQualityMetrics, setCompareQualityMetrics] = useState<CompareQualityMetric[]>([
     'proofAccuracy',
     'exactPassRate',
@@ -1910,6 +2058,8 @@ function App() {
   const [compareSessionFilter, setCompareSessionFilter] = useState(ALL_OPTION);
   const [compareBatchFilter, setCompareBatchFilter] = useState(ALL_OPTION);
   const [compareAttributeFilter, setCompareAttributeFilter] = useState(ALL_OPTION);
+  const [compareAuditorFilter, setCompareAuditorFilter] = useState(ALL_OPTION);
+  const [compareAuditorTeamFilter, setCompareAuditorTeamFilter] = useState(ALL_OPTION);
   const [efficiencyStartDateFilter, setEfficiencyStartDateFilter] = useState(ALL_OPTION);
   const [efficiencyEndDateFilter, setEfficiencyEndDateFilter] = useState(ALL_OPTION);
   const [efficiencyTeamFilter, setEfficiencyTeamFilter] = useState(ALL_OPTION);
@@ -1935,6 +2085,15 @@ function App() {
         }
       } catch {
         setPropertyCategoryDictionary([]);
+      }
+
+      try {
+        const auditorDictionary = await fetchAuditorTeamDictionary();
+        if (Array.isArray(auditorDictionary.entries)) {
+          setAuditorTeamDictionary(auditorDictionary.entries);
+        }
+      } catch {
+        setAuditorTeamDictionary([]);
       }
 
       try {
@@ -1967,8 +2126,18 @@ function App() {
       sessions: createOptions(dataset.rows, 'session'),
       batches: createOptions(dataset.rows, 'batch'),
       attributes: createOptions(dataset.rows, 'attribute'),
+      auditors: createOptions(dataset.rows.filter((row) => row.auditor), 'auditor'),
+      auditorTeams: [ALL_OPTION].concat(
+        [
+          ...new Set<string>(
+            dataset.rows
+              .map((row) => resolveAuditorTeam(row.auditor ?? '', row.auditorTeam ?? '', auditorTeamDictionary))
+              .filter((team): team is string => Boolean(team)),
+          ),
+        ].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+      ),
     }),
-    [dataset.rows],
+    [auditorTeamDictionary, dataset.rows],
   );
   const weekOptions = useMemo(() => createWeekOptions(options.dates), [options.dates]);
   const efficiencyDateOptions = useMemo(() => createDateOptions(efficiencyDataset.rows), [efficiencyDataset.rows]);
@@ -2059,37 +2228,65 @@ function App() {
     () => options.batches.filter((option) => option !== ALL_OPTION),
     [options.batches],
   );
+  const compareAuditorOptions = useMemo(
+    () => options.auditors.filter((option) => option !== ALL_OPTION),
+    [options.auditors],
+  );
+  const compareAuditorTeamOptions = useMemo(
+    () => options.auditorTeams.filter((option) => option !== ALL_OPTION),
+    [options.auditorTeams],
+  );
   const compareDimensionConfig = COMPARE_DIMENSIONS.find((item) => item.key === compareDimension) ?? COMPARE_DIMENSIONS[0];
   const compareDimensionOptions =
     compareDimension === 'session'
       ? compareSessionOptions
       : compareDimension === 'attribute'
         ? compareAttributeOptions
-        : compareBatchOptions;
+        : compareDimension === 'batch'
+          ? compareBatchOptions
+          : compareDimension === 'auditor'
+            ? compareAuditorOptions
+            : compareAuditorTeamOptions;
   const compareAFilter =
     compareDimension === 'session'
       ? compareSessionAFilter
       : compareDimension === 'attribute'
         ? compareAttributeAFilter
-        : compareBatchAFilter;
+        : compareDimension === 'batch'
+          ? compareBatchAFilter
+          : compareDimension === 'auditor'
+            ? compareAuditorAFilter
+            : compareAuditorTeamAFilter;
   const compareBFilter =
     compareDimension === 'session'
       ? compareSessionBFilter
       : compareDimension === 'attribute'
         ? compareAttributeBFilter
-        : compareBatchBFilter;
+        : compareDimension === 'batch'
+          ? compareBatchBFilter
+          : compareDimension === 'auditor'
+            ? compareAuditorBFilter
+            : compareAuditorTeamBFilter;
   const setCompareAFilter =
     compareDimension === 'session'
       ? setCompareSessionAFilter
       : compareDimension === 'attribute'
         ? setCompareAttributeAFilter
-        : setCompareBatchAFilter;
+        : compareDimension === 'batch'
+          ? setCompareBatchAFilter
+          : compareDimension === 'auditor'
+            ? setCompareAuditorAFilter
+            : setCompareAuditorTeamAFilter;
   const setCompareBFilter =
     compareDimension === 'session'
       ? setCompareSessionBFilter
       : compareDimension === 'attribute'
         ? setCompareAttributeBFilter
-        : setCompareBatchBFilter;
+        : compareDimension === 'batch'
+          ? setCompareBatchBFilter
+          : compareDimension === 'auditor'
+            ? setCompareAuditorBFilter
+            : setCompareAuditorTeamBFilter;
   const compareA = compareAFilter || compareDimensionOptions[0] || '';
   const compareB = compareBFilter || compareDimensionOptions.find((option) => option !== compareA) || compareA;
   const compareBaseRows = useMemo(
@@ -2100,11 +2297,17 @@ function App() {
         session: compareDimension === 'session' ? ALL_OPTION : compareSessionFilter,
         batch: compareDimension === 'batch' ? ALL_OPTION : compareBatchFilter,
         attribute: compareDimension === 'attribute' ? ALL_OPTION : compareAttributeFilter,
+        auditor: compareDimension === 'auditor' ? ALL_OPTION : compareAuditorFilter,
+        auditorTeam: compareDimension === 'auditorTeam' ? ALL_OPTION : compareAuditorTeamFilter,
+        auditorTeamDictionary,
       }),
     [
       compareDimension,
       compareAttributeFilter,
       compareBatchFilter,
+      compareAuditorFilter,
+      compareAuditorTeamFilter,
+      auditorTeamDictionary,
       compareEndDateFilter,
       compareSessionFilter,
       compareStartDateFilter,
@@ -2112,12 +2315,22 @@ function App() {
     ],
   );
   const compareARows = useMemo(
-    () => compareBaseRows.filter((row) => row[compareDimension] === compareA),
-    [compareA, compareBaseRows, compareDimension],
+    () =>
+      compareBaseRows.filter((row) =>
+        compareDimension === 'auditorTeam'
+          ? resolveAuditorTeam(row.auditor ?? '', row.auditorTeam ?? '', auditorTeamDictionary) === compareA
+          : String(row[compareDimension] ?? '') === compareA,
+      ),
+    [auditorTeamDictionary, compareA, compareBaseRows, compareDimension],
   );
   const compareBRows = useMemo(
-    () => compareBaseRows.filter((row) => row[compareDimension] === compareB),
-    [compareB, compareBaseRows, compareDimension],
+    () =>
+      compareBaseRows.filter((row) =>
+        compareDimension === 'auditorTeam'
+          ? resolveAuditorTeam(row.auditor ?? '', row.auditorTeam ?? '', auditorTeamDictionary) === compareB
+          : String(row[compareDimension] ?? '') === compareB,
+      ),
+    [auditorTeamDictionary, compareB, compareBaseRows, compareDimension],
   );
   const compareAMetrics = useMemo(() => aggregateMetrics(compareARows), [compareARows]);
   const compareBMetrics = useMemo(() => aggregateMetrics(compareBRows), [compareBRows]);
@@ -2274,7 +2487,7 @@ function App() {
     setError('');
 
     try {
-      const parsed = await parseWorkbookFile(file, propertyCategoryDictionary);
+      const parsed = await parseWorkbookFile(file, propertyCategoryDictionary, auditorTeamDictionary);
       const nextDataset = await mergeSharedDataset(parsed);
       setDataset(nextDataset);
       setOverviewStartDateFilter(ALL_OPTION);
@@ -2292,6 +2505,8 @@ function App() {
       setCompareSessionBFilter('');
       setCompareBatchFilter(ALL_OPTION);
       setCompareAttributeFilter(ALL_OPTION);
+      setCompareAuditorFilter(ALL_OPTION);
+      setCompareAuditorTeamFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '导入失败，请检查文件格式。');
     } finally {
@@ -2318,8 +2533,14 @@ function App() {
       setCompareEndDateFilter(ALL_OPTION);
       setCompareSessionAFilter('');
       setCompareSessionBFilter('');
+      setCompareAuditorAFilter('');
+      setCompareAuditorBFilter('');
+      setCompareAuditorTeamAFilter('');
+      setCompareAuditorTeamBFilter('');
       setCompareBatchFilter(ALL_OPTION);
       setCompareAttributeFilter(ALL_OPTION);
+      setCompareAuditorFilter(ALL_OPTION);
+      setCompareAuditorTeamFilter(ALL_OPTION);
     } catch (err) {
       setError(err instanceof Error ? err.message : '清空共享数据失败。');
     }
@@ -2383,9 +2604,7 @@ function App() {
       setModelAnalysis(response);
   } catch (err) {
       setModelAnalysisError(
-        err instanceof Error && err.name === 'AbortError'
-          ? '大模型分析等待超过 75 秒，已自动停止。请稍后重试，或切换更快的模型。'
-          : err instanceof Error
+        err instanceof Error
             ? err.message
             : '大模型分析生成失败。',
       );
@@ -2471,6 +2690,88 @@ function App() {
       setEditingDictionaryKey('');
     } catch (err) {
       setError(err instanceof Error ? err.message : '重置分类字典失败。');
+    } finally {
+      setIsDictionarySaving(false);
+    }
+  };
+
+  const persistAuditorTeamDictionary = async (entries: AuditorTeamEntry[]) => {
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const response = await saveAuditorTeamDictionary(entries);
+      setAuditorTeamDictionary(response.entries);
+      setAuditorTeamDraft({ auditorName: '', team: '' });
+      setEditingAuditorTeamKey('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存审核人团队字典失败。');
+    } finally {
+      setIsDictionarySaving(false);
+    }
+  };
+
+  const upsertAuditorTeamEntry = async () => {
+    const auditorName = auditorTeamDraft.auditorName.trim();
+    const team = auditorTeamDraft.team.trim();
+
+    if (!auditorName || !team) {
+      setError('请填写审核人和团队。');
+      return;
+    }
+
+    const nextEntries = auditorTeamDictionary.filter(
+      (entry) => normalizeAuditorName(entry.auditorName) !== normalizeAuditorName(editingAuditorTeamKey || auditorName),
+    );
+
+    await persistAuditorTeamDictionary([...nextEntries, { auditorName, team }]);
+  };
+
+  const editAuditorTeamEntry = (entry: AuditorTeamEntry) => {
+    setAuditorTeamDraft(entry);
+    setEditingAuditorTeamKey(entry.auditorName);
+    setActiveView('dictionary');
+  };
+
+  const deleteAuditorTeamEntry = async (auditorName: string) => {
+    await persistAuditorTeamDictionary(
+      auditorTeamDictionary.filter(
+        (entry) => normalizeAuditorName(entry.auditorName) !== normalizeAuditorName(auditorName),
+      ),
+    );
+  };
+
+  const handleAuditorTeamImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const entries = await parseAuditorTeamDictionaryFile(file);
+      await persistAuditorTeamDictionary(entries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导入审核人团队字典失败，请检查文件格式。');
+    } finally {
+      setIsDictionarySaving(false);
+      event.target.value = '';
+    }
+  };
+
+  const resetAuditorDictionary = async () => {
+    setIsDictionarySaving(true);
+    setError('');
+
+    try {
+      const response = await resetAuditorTeamDictionary();
+      setAuditorTeamDictionary(response.entries);
+      setAuditorTeamDraft({ auditorName: '', team: '' });
+      setEditingAuditorTeamKey('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重置审核人团队字典失败。');
     } finally {
       setIsDictionarySaving(false);
     }
@@ -2826,6 +3127,24 @@ function App() {
                         value={compareAttributeFilter}
                         options={options.attributes}
                         onChange={setCompareAttributeFilter}
+                      />
+                    ) : null}
+                    {compareDimension !== 'auditor' ? (
+                      <FilterSelect
+                        label="审核人"
+                        icon={<Users size={16} />}
+                        value={compareAuditorFilter}
+                        options={options.auditors}
+                        onChange={setCompareAuditorFilter}
+                      />
+                    ) : null}
+                    {compareDimension !== 'auditorTeam' ? (
+                      <FilterSelect
+                        label="审核团队"
+                        icon={<Users size={16} />}
+                        value={compareAuditorTeamFilter}
+                        options={options.auditorTeams}
+                        onChange={setCompareAuditorTeamFilter}
                       />
                     ) : null}
                   </div>
@@ -3657,6 +3976,143 @@ function App() {
                               <button
                                 type="button"
                                 onClick={() => void deleteDictionaryEntry(entry.propertyName)}
+                                className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-100"
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="mt-8 grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Auditor Team Form</p>
+                  <h2 className="mt-2 font-display text-2xl text-slate-900">
+                    {editingAuditorTeamKey ? '修改团队规则' : '新增团队规则'}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    用于将质量底表中的审核人归属到团队，对比分析中的“团队对比”会优先使用这里的维护结果。
+                  </p>
+
+                  <div className="mt-6 grid gap-4">
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">审核人</span>
+                      <input
+                        value={auditorTeamDraft.auditorName}
+                        onChange={(event) =>
+                          setAuditorTeamDraft((current) => ({ ...current, auditorName: event.target.value }))
+                        }
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                        placeholder="例如：候伟强"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-slate-400">团队</span>
+                      <input
+                        value={auditorTeamDraft.team}
+                        onChange={(event) =>
+                          setAuditorTeamDraft((current) => ({ ...current, team: event.target.value }))
+                        }
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                        placeholder="例如：常州_老人"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-6 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void upsertAuditorTeamEntry()}
+                      disabled={isDictionarySaving}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Users size={16} />
+                      {isDictionarySaving ? '保存中...' : editingAuditorTeamKey ? '保存修改' : '新增规则'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuditorTeamDraft({ auditorName: '', team: '' });
+                        setEditingAuditorTeamKey('');
+                      }}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      取消编辑
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Auditor Team Actions</p>
+                      <h2 className="mt-2 font-display text-2xl text-slate-900">审核人团队字典</h2>
+                      <p className="mt-2 text-sm text-slate-500">当前共有 {formatInteger(auditorTeamDictionary.length)} 条团队规则。</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-700 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-800">
+                        <Upload size={16} />
+                        导入团队字典 Excel
+                        <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleAuditorTeamImport} />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => void resetAuditorDictionary()}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700 transition hover:bg-amber-100"
+                      >
+                        恢复模板
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-700">
+                    修改团队字典后，对比分析中的团队选项会按最新字典重新生成；新导入质量底表也会自动写入审核团队。
+                  </div>
+                </div>
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Auditor Team Table</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">审核人团队明细</h2>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+                    {formatInteger(auditorTeamDictionary.length)} 条
+                  </span>
+                </div>
+
+                <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-100">
+                  <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                    <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-[0.18em] text-slate-400">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">审核人</th>
+                        <th className="px-4 py-3 font-medium">团队</th>
+                        <th className="px-4 py-3 text-right font-medium">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {auditorTeamDictionary.map((entry) => (
+                        <tr key={`${entry.auditorName}-${entry.team}`} className="bg-white">
+                          <td className="px-4 py-3 font-medium text-slate-800">{entry.auditorName}</td>
+                          <td className="px-4 py-3 text-slate-600">{entry.team}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => editAuditorTeamEntry(entry)}
+                                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-200"
+                              >
+                                修改
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void deleteAuditorTeamEntry(entry.auditorName)}
                                 className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-100"
                               >
                                 删除

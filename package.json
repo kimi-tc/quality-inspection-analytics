@@ -10,6 +10,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "start:server": "tsx server/index.ts",
+    "datadev:auto": "node scripts/datadev-auto-export.mjs",
+    "sql:datadev": "node scripts/generate-datadev-sql.mjs",
+    "import:quality": "node scripts/import-downloaded-quality.mjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
@@ -37,6 +40,7 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
+    "playwright": "^1.60.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
