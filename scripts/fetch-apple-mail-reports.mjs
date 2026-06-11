@@ -17,7 +17,7 @@ const inboxDir = path.join(baseDir, 'inbox');
 const qualityDir = path.join(baseDir, 'quality');
 const efficiencyDir = path.join(baseDir, 'efficiency');
 const lookbackDays = Number(process.env.MAIL_REPORT_LOOKBACK_DAYS || 3);
-const mailboxName = process.env.APPLE_MAILBOX_NAME || 'INBOX';
+const mailboxName = process.env.APPLE_MAILBOX_NAME || '';
 const accountName = process.env.APPLE_MAIL_ACCOUNT_NAME || '';
 const qualitySubject = process.env.MAIL_REPORT_QUALITY_SUBJECT || '看板_基础数据';
 const efficiencySubject = process.env.MAIL_REPORT_EFFICIENCY_SUBJECT || '看板_人效';
@@ -82,9 +82,17 @@ end saveOneAttachment
 
 tell application "Mail"
   if accountName is not "" then
-    set targetMailbox to mailbox mailboxName of account accountName
+    if mailboxName is not "" then
+      set targetMailbox to mailbox mailboxName of account accountName
+    else
+      set targetMailbox to inbox of account accountName
+    end if
   else
-    set targetMailbox to mailbox mailboxName
+    if mailboxName is not "" then
+      set targetMailbox to mailbox mailboxName
+    else
+      set targetMailbox to inbox
+    end if
   end if
 
   set reportMessages to messages of targetMailbox whose date received ≥ sinceDate
@@ -137,7 +145,7 @@ const main = async () => {
   console.log(JSON.stringify({
     dryRun,
     source: 'Apple Mail',
-    mailboxName,
+    mailboxName: mailboxName || '(inbox)',
     accountName: accountName || '(default)',
     lookbackDays,
     baseDir,

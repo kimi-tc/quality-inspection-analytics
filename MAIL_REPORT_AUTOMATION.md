@@ -33,8 +33,15 @@ MAIL_REPORT_DOWNLOAD_DIR=/Users/tangchao144522/Downloads/预质检每日数据
 如果邮件.app 里邮箱账户或收件箱不是默认名称，再配置：
 
 ```bash
-APPLE_MAILBOX_NAME=INBOX
-APPLE_MAIL_ACCOUNT_NAME=
+APPLE_MAILBOX_NAME=
+APPLE_MAIL_ACCOUNT_NAME=Atrenew
+```
+
+如果默认收件箱仍读取失败，可以把邮箱目录显式写成中文：
+
+```bash
+APPLE_MAILBOX_NAME=收件箱
+APPLE_MAIL_ACCOUNT_NAME=Atrenew
 ```
 
 测试从邮件.app 下载附件：
