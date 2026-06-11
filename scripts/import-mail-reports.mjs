@@ -31,7 +31,7 @@ const runNodeScript = (scriptName, env = {}) => {
   );
 
   if (result.status !== 0) {
-    throw new Error(`${scriptName} 执行失败，退出码 ${result.status}`);
+    throw new Error(`${scriptName} 执行失败，退出码 ${result.status}。可单独执行：node scripts/${scriptName} 查看更完整日志。`);
   }
 };
 

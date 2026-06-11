@@ -180,6 +180,16 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  if (error instanceof Error) {
+    console.error(error.stack || error.message);
+    if ('code' in error && error.code) {
+      console.error(`error.code=${error.code}`);
+    }
+    if ('response' in error && error.response) {
+      console.error(`error.response=${error.response}`);
+    }
+  } else {
+    console.error(String(error));
+  }
   process.exit(1);
 });
