@@ -65,14 +65,14 @@ import {
 } from './types';
 
 const REQUIRED_HEADERS = [
-  '第一次线审完成时间',
-  '场次',
-  '批次',
-  '属性标签',
-  '申报次数',
-  '模糊通过次数',
-  '未通过次数',
-  '举证未通过次数',
+  ['第一次线审完成时间', 'online1_complete_date'],
+  ['场次', 'sale_type'],
+  ['批次', 'batch_flag'],
+  ['属性标签', 'property_tag'],
+  ['申报次数', 'declare_cnt'],
+  ['模糊通过次数', 'mix_pass_cnt'],
+  ['未通过次数', 'failed_cnt'],
+  ['举证未通过次数', 'proof_failed_cnt'],
 ] as const;
 
 const REQUIRED_EFFICIENCY_HEADERS = [
@@ -261,6 +261,9 @@ const getRecordValue = (record: Record<string, unknown>, headers: string[]) => {
   return undefined;
 };
 
+const hasAnyHeader = (headerSet: Set<string>, headers: readonly string[]) =>
+  headers.some((header) => headerSet.has(header));
+
 const normalizeDate = (value: unknown): string => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value.toISOString().slice(0, 10);
@@ -312,7 +315,7 @@ const pickDataSheet = (workbook: XLSX.WorkBook) => {
     }
 
     const headerSet = new Set(Object.keys(json[0]));
-    const matchedHeaders = REQUIRED_HEADERS.filter((header) => headerSet.has(header));
+    const matchedHeaders = REQUIRED_HEADERS.filter((headers) => hasAnyHeader(headerSet, headers));
 
     if (matchedHeaders.length === REQUIRED_HEADERS.length) {
       return { sheetName, json };
@@ -362,30 +365,26 @@ const parseWorkbookFile = async (
 
   const rows: ImportedRow[] = matched.json
     .map((record) => ({
-      date: normalizeDate(record['第一次线审完成时间']),
+      date: normalizeDate(getRecordValue(record, ['第一次线审完成时间', '日期', '第一次线审完成日期', 'online1_complete_date'])),
       auditor: String(
-        record['第一次在线审核人'] ??
-          record['审核人'] ??
-          record['第一次线审审核人'] ??
-          record['一审审核人'] ??
-          '',
+        getRecordValue(record, ['第一次在线审核人', '审核人', '第一次线审审核人', '一审审核人', 'auditor_name']) ?? '',
       ).trim(),
-      auditorTeam: String(record['审核团队'] ?? record['团队'] ?? '').trim(),
-      session: String(record['场次'] ?? '').trim(),
-      batch: String(record['批次'] ?? '').trim(),
+      auditorTeam: String(getRecordValue(record, ['审核团队', '团队', 'auditor_team']) ?? '').trim(),
+      session: String(getRecordValue(record, ['场次', 'sale_type']) ?? '').trim(),
+      batch: String(getRecordValue(record, ['批次', 'batch_flag']) ?? '').trim(),
       category: resolveCategory(
         String(record['属性项分类'] ?? ''),
-        String(record['属性标签'] ?? ''),
+        String(getRecordValue(record, ['属性标签', '属性项', 'property_tag']) ?? ''),
         propertyCategoryDictionary,
       ),
-      attribute: String(record['属性标签'] ?? '').trim(),
-      declarations: toNumber(record['申报次数']),
-      exactPasses: Object.prototype.hasOwnProperty.call(record, '精准通过次数')
-        ? toNumber(record['精准通过次数'])
+      attribute: String(getRecordValue(record, ['属性标签', '属性项', 'property_tag']) ?? '').trim(),
+      declarations: toNumber(getRecordValue(record, ['申报次数', 'declare_cnt'])),
+      exactPasses: getRecordValue(record, ['精准通过次数', 'precise_pass_cnt']) !== undefined
+        ? toNumber(getRecordValue(record, ['精准通过次数', 'precise_pass_cnt']))
         : undefined,
-      ambiguousPasses: toNumber(record['模糊通过次数']),
-      rejects: toNumber(record['未通过次数']),
-      proofRejects: toNumber(record['举证未通过次数']),
+      ambiguousPasses: toNumber(getRecordValue(record, ['模糊通过次数', 'mix_pass_cnt'])),
+      rejects: toNumber(getRecordValue(record, ['未通过次数', 'failed_cnt'])),
+      proofRejects: toNumber(getRecordValue(record, ['举证未通过次数', 'proof_failed_cnt'])),
     }))
     .filter(
       (row) =>

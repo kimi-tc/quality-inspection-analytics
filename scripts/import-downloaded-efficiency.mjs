@@ -4,35 +4,28 @@ import path from 'node:path';
 import process from 'node:process';
 import XLSX from 'xlsx';
 
-const DEFAULT_DOWNLOAD_DIR = path.join(process.env.HOME || '.', 'Downloads', '预质检每日数据');
-const downloadDir = process.env.QUALITY_DOWNLOAD_DIR || DEFAULT_DOWNLOAD_DIR;
-const apiBaseUrls = (process.env.QUALITY_API_BASE_URLS || process.env.QUALITY_API_BASE_URL || 'http://127.0.0.1:3000')
+const DEFAULT_DOWNLOAD_DIR = path.join(process.env.HOME || '.', 'Downloads', '预质检每日数据', 'efficiency');
+const downloadDir = process.env.EFFICIENCY_DOWNLOAD_DIR || DEFAULT_DOWNLOAD_DIR;
+const apiBaseUrls = (process.env.EFFICIENCY_API_BASE_URLS || process.env.EFFICIENCY_API_BASE_URL || 'http://127.0.0.1:3000')
   .split(',')
   .map((url) => url.trim().replace(/\/$/, ''))
   .filter(Boolean);
-const explicitFile = process.env.QUALITY_IMPORT_FILE || process.argv[2] || '';
-const dryRun = process.env.QUALITY_IMPORT_DRY_RUN === '1';
+const explicitFile = process.env.EFFICIENCY_IMPORT_FILE || process.argv[2] || '';
+const dryRun = process.env.EFFICIENCY_IMPORT_DRY_RUN === '1';
 
 const requiredHeaders = [
-  ['场次', 'sale_type'],
-  ['批次', 'batch_flag'],
-  ['申报次数', 'declare_cnt'],
-  ['模糊通过次数', 'mix_pass_cnt'],
-  ['未通过次数', 'failed_cnt'],
-  ['举证未通过次数', 'proof_failed_cnt'],
+  ['日期', 'dt'],
+  ['员工姓名', 'employee_name'],
+  ['团队', 'team'],
+  ['总审核量', '处理单量', 'total_audit_cnt'],
+  ['加权审核量', '加权处理量', 'weighted_audit_cnt'],
+  ['一审审核量', 'first_audit_cnt'],
+  ['一审通过量', 'first_audit_pass_cnt'],
+  ['精准通过量', 'accurate_pass_cnt'],
+  ['未通过量', 'first_audit_reject_cnt'],
+  ['举证拒绝量', 'proof_refusal_cnt'],
+  ['模糊通过量', 'ambiguous_pass_cnt'],
 ];
-
-const dateHeaders = ['第一次线审完成时间', '日期', '第一次线审完成日期', 'online1_complete_date'];
-const attributeHeaders = ['属性标签', '属性项', 'property_tag'];
-const auditorHeaders = ['第一次在线审核人', '审核人', '第一次线审审核人', '一审审核人', 'auditor_name'];
-const auditorTeamHeaders = ['审核团队', '团队', 'auditor_team'];
-
-const findHeader = (headers, aliases) => aliases.find((header) => headers.includes(header));
-
-const getValue = (record, aliases) => {
-  const header = aliases.find((candidate) => Object.prototype.hasOwnProperty.call(record, candidate));
-  return header ? record[header] : undefined;
-};
 
 const toNumber = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -44,6 +37,8 @@ const toNumber = (value) => {
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const safeRateFromCounts = (numerator, denominator) => (denominator ? numerator / denominator : 0);
 
 const normalizeDate = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -66,13 +61,14 @@ const normalizeDate = (value) => {
   return text.slice(0, 10);
 };
 
+const getValue = (record, aliases) => {
+  const header = aliases.find((candidate) => Object.prototype.hasOwnProperty.call(record, candidate));
+  return header ? record[header] : undefined;
+};
+
 const hasHeaders = (headers) => {
   const headerSet = new Set(headers);
-  return (
-    requiredHeaders.every((aliases) => aliases.some((header) => headerSet.has(header))) &&
-    dateHeaders.some((header) => headerSet.has(header)) &&
-    attributeHeaders.some((header) => headerSet.has(header))
-  );
+  return requiredHeaders.every((aliases) => aliases.some((header) => headerSet.has(header)));
 };
 
 const sheetToRows = (sheet) => {
@@ -101,37 +97,47 @@ const parseWorkbook = async (filePath) => {
   });
 
   for (const sheetName of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = sheetToRows(worksheet);
+    const rows = sheetToRows(workbook.Sheets[sheetName]);
 
     if (!rows.length) continue;
 
     const headers = Object.keys(rows[0] || {});
     if (!hasHeaders(headers)) continue;
 
-    const dateHeader = findHeader(headers, dateHeaders);
-    const attributeHeader = findHeader(headers, attributeHeaders);
-    const auditorHeader = findHeader(headers, auditorHeaders);
-    const auditorTeamHeader = findHeader(headers, auditorTeamHeaders);
-
     const parsedRows = rows
-      .map((record) => ({
-        date: normalizeDate(record[dateHeader]),
-        auditor: auditorHeader ? String(record[auditorHeader] ?? '').trim() : '',
-        auditorTeam: auditorTeamHeader ? String(record[auditorTeamHeader] ?? '').trim() : '',
-        session: String(getValue(record, ['场次', 'sale_type']) ?? '').trim(),
-        batch: String(getValue(record, ['批次', 'batch_flag']) ?? '').trim(),
-        category: String(record['属性项分类'] ?? '').trim(),
-        attribute: String(record[attributeHeader] ?? '').trim(),
-        declarations: toNumber(getValue(record, ['申报次数', 'declare_cnt'])),
-        exactPasses: getValue(record, ['精准通过次数', 'precise_pass_cnt']) !== undefined
-          ? toNumber(getValue(record, ['精准通过次数', 'precise_pass_cnt']))
-          : undefined,
-        ambiguousPasses: toNumber(getValue(record, ['模糊通过次数', 'mix_pass_cnt'])),
-        rejects: toNumber(getValue(record, ['未通过次数', 'failed_cnt'])),
-        proofRejects: toNumber(getValue(record, ['举证未通过次数', 'proof_failed_cnt'])),
-      }))
-      .filter((row) => row.date && row.session && row.batch && row.attribute && Number.isFinite(row.declarations));
+      .map((record) => {
+        const firstAuditCount = toNumber(getValue(record, ['一审审核量', 'first_audit_cnt']));
+        const firstAuditPassCount = toNumber(getValue(record, ['一审通过量', 'first_audit_pass_cnt']));
+        const precisionPassCount = toNumber(getValue(record, ['精准通过量', 'accurate_pass_cnt']));
+        const proofRefusalCount = toNumber(getValue(record, ['举证拒绝量', 'proof_refusal_cnt']));
+        const ambiguousCount = toNumber(getValue(record, ['模糊通过量', 'ambiguous_pass_cnt']));
+
+        return {
+          date: normalizeDate(getValue(record, ['日期', 'dt'])),
+          employee: String(getValue(record, ['员工姓名', 'employee_name']) ?? '').trim(),
+          team: String(getValue(record, ['团队', 'team']) ?? '').trim(),
+          session: String(getValue(record, ['场次', 'sale_type']) ?? '审核人效').trim() || '审核人效',
+          batch: String(getValue(record, ['批次', 'flag', 'batch_flag']) ?? '全部批次').trim() || '全部批次',
+          handledCount: toNumber(getValue(record, ['总审核量', '处理单量', 'total_audit_cnt'])),
+          weightedHandledCount: toNumber(getValue(record, ['加权审核量', '加权处理量', 'weighted_audit_cnt'])),
+          firstAuditCount,
+          firstAuditPassCount,
+          precisionPassCount,
+          auditNotPassCount: toNumber(getValue(record, ['未通过量', 'first_audit_reject_cnt'])),
+          proofRefusalCount,
+          ambiguousCount,
+          passRate: toNumber(getValue(record, ['通过率', 'pass_rate'])) || safeRateFromCounts(firstAuditPassCount, firstAuditCount),
+          precisionPassRate:
+            toNumber(getValue(record, ['精准通过率', 'accurate_pass_rate'])) ||
+            safeRateFromCounts(precisionPassCount, firstAuditCount),
+          proofAccuracy:
+            toNumber(getValue(record, ['举证准确率', 'proof_accuracy_rate'])) ||
+            safeRateFromCounts(firstAuditCount - ambiguousCount - proofRefusalCount, firstAuditCount),
+          avgHandleMinutes: toNumber(getValue(record, ['平均处理时长', 'avg_handle_minutes'])),
+          timeoutCount: toNumber(getValue(record, ['超时次数', 'timeout_cnt'])),
+        };
+      })
+      .filter((row) => row.date && row.employee && Number.isFinite(row.handledCount));
 
     return {
       rows: parsedRows,
@@ -141,7 +147,7 @@ const parseWorkbook = async (filePath) => {
     };
   }
 
-  throw new Error(`未找到质量数据工作表：${filePath}`);
+  throw new Error(`未找到人效数据工作表：${filePath}`);
 };
 
 const listExcelFiles = async () => {
@@ -175,7 +181,7 @@ const resolveFile = async () => {
 };
 
 const mergeDataset = async (payload, apiBaseUrl) => {
-  const response = await fetch(`${apiBaseUrl}/api/dataset/merge`, {
+  const response = await fetch(`${apiBaseUrl}/api/efficiency-dataset/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -194,7 +200,7 @@ const main = async () => {
   const parsed = await parseWorkbook(filePath);
 
   if (!parsed.rows.length) {
-    throw new Error(`文件没有解析到有效质量数据：${filePath}`);
+    throw new Error(`文件没有解析到有效人效数据：${filePath}`);
   }
 
   if (dryRun) {

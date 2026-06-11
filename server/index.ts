@@ -16,6 +16,7 @@ type ImportedRow = {
   category: string;
   attribute: string;
   declarations: number;
+  exactPasses?: number;
   ambiguousPasses: number;
   rejects: number;
   proofRejects: number;
@@ -217,6 +218,7 @@ const buildRowKey = (row: ImportedRow) =>
     row.category,
     row.attribute,
     row.declarations,
+    row.exactPasses ?? '',
     row.ambiguousPasses,
     row.rejects,
     row.proofRejects,
