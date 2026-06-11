@@ -90,6 +90,12 @@ const sheetToRows = (sheet) => {
   });
 };
 
+const inspectWorkbookHeaders = (workbook) =>
+  workbook.SheetNames.map((sheetName) => {
+    const rows = sheetToRows(workbook.Sheets[sheetName]);
+    return { sheetName, headers: Object.keys(rows[0] || {}) };
+  });
+
 const parseWorkbook = async (filePath) => {
   const workbook = XLSX.readFile(filePath, {
     cellDates: true,
@@ -147,7 +153,10 @@ const parseWorkbook = async (filePath) => {
     };
   }
 
-  throw new Error(`未找到人效数据工作表：${filePath}`);
+  const inspectedHeaders = inspectWorkbookHeaders(workbook)
+    .map((item) => `${item.sheetName}: ${item.headers.join(', ') || '(空表头)'}`)
+    .join(' | ');
+  throw new Error(`未找到人效数据工作表：${filePath}。检测到的表头：${inspectedHeaders || '(无工作表)'}`);
 };
 
 const listExcelFiles = async () => {
@@ -180,6 +189,29 @@ const resolveFile = async () => {
   return files[0].filePath;
 };
 
+const resolveParsedWorkbook = async () => {
+  if (explicitFile) {
+    const filePath = await resolveFile();
+    return parseWorkbook(filePath);
+  }
+
+  const files = await listExcelFiles();
+  if (!files.length) {
+    throw new Error(`下载目录暂无 Excel 文件：${downloadDir}`);
+  }
+
+  const errors = [];
+  for (const file of files) {
+    try {
+      return await parseWorkbook(file.filePath);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  throw new Error(`下载目录内没有可解析的人效 Excel：${downloadDir}\n${errors.join('\n')}`);
+};
+
 const mergeDataset = async (payload, apiBaseUrl) => {
   const response = await fetch(`${apiBaseUrl}/api/efficiency-dataset/merge`, {
     method: 'POST',
@@ -196,8 +228,7 @@ const mergeDataset = async (payload, apiBaseUrl) => {
 };
 
 const main = async () => {
-  const filePath = await resolveFile();
-  const parsed = await parseWorkbook(filePath);
+  const parsed = await resolveParsedWorkbook();
 
   if (!parsed.rows.length) {
     throw new Error(`文件没有解析到有效人效数据：${filePath}`);
