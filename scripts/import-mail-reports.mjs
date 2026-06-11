@@ -2,6 +2,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import dotenv from 'dotenv';
 
 const projectDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -15,6 +16,14 @@ const baseDir = path.resolve(
 const syncToEcs = process.env.MAIL_REPORT_SYNC_TO_ECS === '1';
 const skipFetch = process.env.MAIL_REPORT_SKIP_FETCH === '1';
 const dryRun = process.env.MAIL_REPORT_DRY_RUN === '1';
+
+const hasExcelFiles = (dirPath) => {
+  try {
+    return fs.readdirSync(dirPath).some((fileName) => /\.(xlsx|xls)$/i.test(fileName) && !fileName.startsWith('~$'));
+  } catch {
+    return false;
+  }
+};
 
 const runNodeScript = (scriptName, env = {}) => {
   const result = spawnSync(
@@ -43,14 +52,25 @@ const apiTargets = syncToEcs
   ? 'http://127.0.0.1:3000,http://39.107.221.251:3000'
   : 'http://127.0.0.1:3000';
 
-runNodeScript('import-downloaded-quality.mjs', {
-  QUALITY_DOWNLOAD_DIR: path.join(baseDir, 'quality'),
-  QUALITY_API_BASE_URLS: apiTargets,
-  QUALITY_IMPORT_DRY_RUN: dryRun ? '1' : '',
-});
+const qualityDir = path.join(baseDir, 'quality');
+const efficiencyDir = path.join(baseDir, 'efficiency');
 
-runNodeScript('import-downloaded-efficiency.mjs', {
-  EFFICIENCY_DOWNLOAD_DIR: path.join(baseDir, 'efficiency'),
-  EFFICIENCY_API_BASE_URLS: apiTargets,
-  EFFICIENCY_IMPORT_DRY_RUN: dryRun ? '1' : '',
-});
+if (hasExcelFiles(qualityDir)) {
+  runNodeScript('import-downloaded-quality.mjs', {
+    QUALITY_DOWNLOAD_DIR: qualityDir,
+    QUALITY_API_BASE_URLS: apiTargets,
+    QUALITY_IMPORT_DRY_RUN: dryRun ? '1' : '',
+  });
+} else {
+  console.log(`跳过质量导入：目录暂无 Excel 文件：${qualityDir}`);
+}
+
+if (hasExcelFiles(efficiencyDir)) {
+  runNodeScript('import-downloaded-efficiency.mjs', {
+    EFFICIENCY_DOWNLOAD_DIR: efficiencyDir,
+    EFFICIENCY_API_BASE_URLS: apiTargets,
+    EFFICIENCY_IMPORT_DRY_RUN: dryRun ? '1' : '',
+  });
+} else {
+  console.log(`跳过人效导入：目录暂无 Excel 文件：${efficiencyDir}`);
+}
