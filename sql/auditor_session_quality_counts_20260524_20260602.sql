@@ -8,7 +8,12 @@ WITH cte AS (
         asa.online1_observer_name AS observer_name,
         dl.cvalue_name AS sale_type,
         asae.oneline1_property_names,
-        asae.online1_mix_pass_property_name_names,
+        CASE
+            WHEN (asa.online1_diff_value_names IS NULL OR TRIM(asa.online1_diff_value_names) = '')
+             AND asa.online1_result_name LIKE '%通过%'
+             AND asa.online1_result_name NOT LIKE '%未通过%'
+            THEN asae.oneline1_property_names
+        END AS mix_affected_names,
         CASE
             WHEN asa.online1_result_name LIKE '%未通过%'
             THEN asae.oneline1_property_names
@@ -59,7 +64,7 @@ counts_flattened AS (
         'mix' AS src
     FROM cte
     LATERAL VIEW EXPLODE(
-        SPLIT(COALESCE(online1_mix_pass_property_name_names, ''), CHR(59))
+        SPLIT(COALESCE(mix_affected_names, ''), CHR(59))
     ) t AS tag
     WHERE TRIM(tag) <> ''
 

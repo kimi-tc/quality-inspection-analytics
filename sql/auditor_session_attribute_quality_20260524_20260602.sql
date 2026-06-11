@@ -23,7 +23,12 @@ WITH cte AS (
             WHEN asae.online1_cheat_proof_flag_name LIKE '%预质检测试%' THEN '第1批'
         END AS flag,
         asae.oneline1_property_names,
-        asae.online1_mix_pass_property_name_names,
+        CASE
+            WHEN (asa.online1_diff_value_names IS NULL OR TRIM(asa.online1_diff_value_names) = '')
+             AND asa.online1_result_name LIKE '%通过%'
+             AND asa.online1_result_name NOT LIKE '%未通过%'
+            THEN asae.oneline1_property_names
+        END AS mix_affected_names,
         CASE
             WHEN asa.online1_remark_txt LIKE '%举证%'
              AND asa.online1_result_name LIKE '%未通过%'
@@ -77,7 +82,7 @@ tags_flattened AS (
         'mix' AS src
     FROM cte
     LATERAL VIEW EXPLODE(
-        SPLIT(COALESCE(online1_mix_pass_property_name_names, ''), CHR(59))
+        SPLIT(COALESCE(mix_affected_names, ''), CHR(59))
     ) t AS tag
 
     UNION ALL

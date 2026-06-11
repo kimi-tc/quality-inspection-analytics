@@ -13,6 +13,7 @@
     "datadev:auto": "node scripts/datadev-auto-export.mjs",
     "sql:datadev": "node scripts/generate-datadev-sql.mjs",
     "import:quality": "node scripts/import-downloaded-quality.mjs",
+    "import:quality:sync": "QUALITY_API_BASE_URLS=http://127.0.0.1:3000,http://39.107.221.251:3000 node scripts/import-downloaded-quality.mjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },

@@ -19,7 +19,19 @@ WITH cte AS (
             WHEN asae.online1_cheat_proof_flag_name LIKE '%预质检测试%'     THEN '第1批'
         END AS flag,
         asae.oneline1_property_names,
-        asae.online1_mix_pass_property_name_names,
+        CASE
+            WHEN (asa.online1_diff_value_names IS NULL OR TRIM(asa.online1_diff_value_names) = '')
+             AND asa.online1_result_name LIKE '%通过%'
+             AND asa.online1_result_name NOT LIKE '%未通过%'
+            THEN asae.oneline1_property_names
+        END AS mix_affected_names,
+        CASE
+            WHEN asa.online1_result_name LIKE '%通过%'
+             AND asa.online1_result_name NOT LIKE '%未通过%'
+             AND asa.online1_diff_value_names IS NOT NULL
+             AND TRIM(asa.online1_diff_value_names) <> ''
+            THEN asae.oneline1_property_names
+        END AS precise_pass_names,
         CASE
             WHEN asa.online1_remark_txt LIKE '%举证%'
              AND asa.online1_result_name LIKE '%未通过%'
@@ -70,7 +82,20 @@ tags_flattened AS (
         sale_type,
         'mix' AS src
     FROM cte
-    LATERAL VIEW EXPLODE(SPLIT(COALESCE(online1_mix_pass_property_name_names, ''), CHR(59))) t AS tag
+    LATERAL VIEW EXPLODE(SPLIT(COALESCE(mix_affected_names, ''), CHR(59))) t AS tag
+
+    UNION ALL
+
+    SELECT
+        online1_complete_date,
+        auditor_name,
+        auditor_team,
+        flag,
+        TRIM(tag) AS tag,
+        sale_type,
+        'precise' AS src
+    FROM cte
+    LATERAL VIEW EXPLODE(SPLIT(COALESCE(precise_pass_names, ''), CHR(59))) t AS tag
 
     UNION ALL
 
@@ -107,6 +132,7 @@ SELECT
     flag                           AS `批次`,
     tag                            AS `属性标签`,
     SUM(CASE WHEN src = 'prop'       THEN 1 ELSE 0 END) AS `申报次数`,
+    SUM(CASE WHEN src = 'precise'    THEN 1 ELSE 0 END) AS `精准通过次数`,
     SUM(CASE WHEN src = 'mix'        THEN 1 ELSE 0 END) AS `模糊通过次数`,
     SUM(CASE WHEN src = 'fail'       THEN 1 ELSE 0 END) AS `未通过次数`,
     SUM(CASE WHEN src = 'proof_fail' THEN 1 ELSE 0 END) AS `举证未通过次数`

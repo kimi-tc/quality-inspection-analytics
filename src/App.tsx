@@ -98,6 +98,20 @@ const REQUIRED_AUDIT_EFFICIENCY_HEADERS = [
   '模糊通过量',
 ] as const;
 
+const REQUIRED_MAIL_EFFICIENCY_HEADERS = [
+  'dt',
+  'employee_name',
+  'team',
+  'total_audit_cnt',
+  'weighted_audit_cnt',
+  'first_audit_cnt',
+  'first_audit_pass_cnt',
+  'accurate_pass_cnt',
+  'first_audit_reject_cnt',
+  'proof_refusal_cnt',
+  'ambiguous_pass_cnt',
+] as const;
+
 const ALL_OPTION = '全部';
 const AMBIGUOUS_RATE_TARGET = 0.07;
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
@@ -237,6 +251,16 @@ const toNumber = (value: unknown): number => {
 
 const safeRateFromCounts = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
 
+const getRecordValue = (record: Record<string, unknown>, headers: string[]) => {
+  for (const header of headers) {
+    if (Object.prototype.hasOwnProperty.call(record, header)) {
+      return record[header];
+    }
+  }
+
+  return undefined;
+};
+
 const normalizeDate = (value: unknown): string => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value.toISOString().slice(0, 10);
@@ -310,10 +334,12 @@ const pickEfficiencySheet = (workbook: XLSX.WorkBook) => {
     const headerSet = new Set(Object.keys(json[0]));
     const matchedLegacyHeaders = REQUIRED_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
     const matchedAuditHeaders = REQUIRED_AUDIT_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
+    const matchedMailHeaders = REQUIRED_MAIL_EFFICIENCY_HEADERS.filter((header) => headerSet.has(header));
 
     if (
       matchedLegacyHeaders.length === REQUIRED_EFFICIENCY_HEADERS.length ||
-      matchedAuditHeaders.length === REQUIRED_AUDIT_EFFICIENCY_HEADERS.length
+      matchedAuditHeaders.length === REQUIRED_AUDIT_EFFICIENCY_HEADERS.length ||
+      matchedMailHeaders.length === REQUIRED_MAIL_EFFICIENCY_HEADERS.length
     ) {
       return { sheetName, json };
     }
@@ -354,6 +380,9 @@ const parseWorkbookFile = async (
       ),
       attribute: String(record['属性标签'] ?? '').trim(),
       declarations: toNumber(record['申报次数']),
+      exactPasses: Object.prototype.hasOwnProperty.call(record, '精准通过次数')
+        ? toNumber(record['精准通过次数'])
+        : undefined,
       ambiguousPasses: toNumber(record['模糊通过次数']),
       rejects: toNumber(record['未通过次数']),
       proofRejects: toNumber(record['举证未通过次数']),
@@ -385,34 +414,36 @@ const parseEfficiencyWorkbookFile = async (file: File): Promise<ParsedEfficiency
 
   const rows: EfficiencyRow[] = matched.json
     .map((record) => {
-      const firstAuditCount = toNumber(record['一审审核量']);
-      const firstAuditPassCount = toNumber(record['一审通过量']);
-      const precisionPassCount = toNumber(record['精准通过量']);
-      const proofRefusalCount = toNumber(record['举证拒绝量']);
-      const ambiguousCount = toNumber(record['模糊通过量']);
-      const handledCount = toNumber(record['总审核量'] ?? record['处理单量']);
+      const firstAuditCount = toNumber(getRecordValue(record, ['一审审核量', 'first_audit_cnt']));
+      const firstAuditPassCount = toNumber(getRecordValue(record, ['一审通过量', 'first_audit_pass_cnt']));
+      const precisionPassCount = toNumber(getRecordValue(record, ['精准通过量', 'accurate_pass_cnt']));
+      const proofRefusalCount = toNumber(getRecordValue(record, ['举证拒绝量', 'proof_refusal_cnt']));
+      const ambiguousCount = toNumber(getRecordValue(record, ['模糊通过量', 'ambiguous_pass_cnt']));
+      const handledCount = toNumber(getRecordValue(record, ['总审核量', '处理单量', 'total_audit_cnt']));
 
       return {
-        date: normalizeDate(record['日期']),
-        employee: String(record['员工姓名'] ?? '').trim(),
-        team: String(record['团队'] ?? '').trim(),
-        session: String(record['场次'] ?? '审核人效').trim() || '审核人效',
-        batch: String(record['批次'] ?? '全部批次').trim() || '全部批次',
+        date: normalizeDate(getRecordValue(record, ['日期', 'dt'])),
+        employee: String(getRecordValue(record, ['员工姓名', 'employee_name']) ?? '').trim(),
+        team: String(getRecordValue(record, ['团队', 'team']) ?? '').trim(),
+        session: String(getRecordValue(record, ['场次', 'sale_type']) ?? '审核人效').trim() || '审核人效',
+        batch: String(getRecordValue(record, ['批次', 'flag']) ?? '全部批次').trim() || '全部批次',
         handledCount,
-        weightedHandledCount: toNumber(record['加权审核量'] ?? record['加权处理量']),
+        weightedHandledCount: toNumber(getRecordValue(record, ['加权审核量', '加权处理量', 'weighted_audit_cnt'])),
         firstAuditCount,
         firstAuditPassCount,
         precisionPassCount,
-        auditNotPassCount: toNumber(record['未通过量']),
+        auditNotPassCount: toNumber(getRecordValue(record, ['未通过量', 'first_audit_reject_cnt'])),
         proofRefusalCount,
         ambiguousCount,
-        passRate: toNumber(record['通过率']) || safeRateFromCounts(firstAuditPassCount, firstAuditCount),
-        precisionPassRate: toNumber(record['精准通过率']) || safeRateFromCounts(precisionPassCount, firstAuditCount),
+        passRate: toNumber(getRecordValue(record, ['通过率', 'pass_rate'])) || safeRateFromCounts(firstAuditPassCount, firstAuditCount),
+        precisionPassRate:
+          toNumber(getRecordValue(record, ['精准通过率', 'accurate_pass_rate'])) ||
+          safeRateFromCounts(precisionPassCount, firstAuditCount),
         proofAccuracy:
-          toNumber(record['举证准确率']) ||
+          toNumber(getRecordValue(record, ['举证准确率', 'proof_accuracy_rate'])) ||
           safeRateFromCounts(firstAuditCount - ambiguousCount - proofRefusalCount, firstAuditCount),
-        avgHandleMinutes: toNumber(record['平均处理时长']),
-        timeoutCount: toNumber(record['超时次数']),
+        avgHandleMinutes: toNumber(getRecordValue(record, ['平均处理时长', 'avg_handle_minutes'])),
+        timeoutCount: toNumber(getRecordValue(record, ['超时次数', 'timeout_cnt'])),
       };
     })
     .filter((row) => row.date && row.employee && Number.isFinite(row.handledCount));
@@ -637,16 +668,22 @@ const resolveWorkplace = (team: string) => {
   return '其他';
 };
 
+const resolveExactPasses = (row: Pick<ImportedRow, 'declarations' | 'ambiguousPasses' | 'rejects' | 'exactPasses'>) =>
+  typeof row.exactPasses === 'number' && Number.isFinite(row.exactPasses)
+    ? row.exactPasses
+    : row.declarations - row.ambiguousPasses - row.rejects;
+
 const aggregateMetrics = (rows: ImportedRow[]) => {
   const totals = rows.reduce(
     (acc, row) => {
       acc.declarations += row.declarations;
+      acc.exactPasses += resolveExactPasses(row);
       acc.ambiguousPasses += row.ambiguousPasses;
       acc.rejects += row.rejects;
       acc.proofRejects += row.proofRejects;
       return acc;
     },
-    { declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 },
+    { declarations: 0, exactPasses: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 },
   );
 
   const safeDivide = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
@@ -657,10 +694,7 @@ const aggregateMetrics = (rows: ImportedRow[]) => {
       totals.declarations - totals.ambiguousPasses - totals.proofRejects,
       totals.declarations,
     ),
-    exactPassRate: safeDivide(
-      totals.declarations - totals.ambiguousPasses - totals.rejects,
-      totals.declarations,
-    ),
+    exactPassRate: safeDivide(totals.exactPasses, totals.declarations),
     ambiguousRate: safeDivide(totals.ambiguousPasses, totals.declarations),
     rejectRate: safeDivide(totals.rejects, totals.declarations),
   };
@@ -668,13 +702,14 @@ const aggregateMetrics = (rows: ImportedRow[]) => {
 
 const aggregateTrend = (rows: ImportedRow[]) =>
   Object.values(
-    rows.reduce<Record<string, { date: string; declarations: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
+    rows.reduce<Record<string, { date: string; declarations: number; exactPasses: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
       (acc, row) => {
         if (!acc[row.date]) {
-          acc[row.date] = { date: row.date, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
+          acc[row.date] = { date: row.date, declarations: 0, exactPasses: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
         }
 
         acc[row.date].declarations += row.declarations;
+        acc[row.date].exactPasses += resolveExactPasses(row);
         acc[row.date].ambiguousPasses += row.ambiguousPasses;
         acc[row.date].rejects += row.rejects;
         acc[row.date].proofRejects += row.proofRejects;
@@ -688,9 +723,7 @@ const aggregateTrend = (rows: ImportedRow[]) =>
       proofAccuracy: item.declarations
         ? (item.declarations - item.ambiguousPasses - item.proofRejects) / item.declarations
         : 0,
-      exactPassRate: item.declarations
-        ? (item.declarations - item.ambiguousPasses - item.rejects) / item.declarations
-        : 0,
+      exactPassRate: item.declarations ? item.exactPasses / item.declarations : 0,
       ambiguousRate: item.declarations ? item.ambiguousPasses / item.declarations : 0,
       rejectRate: item.declarations ? item.rejects / item.declarations : 0,
     }))
@@ -719,6 +752,7 @@ const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: Pr
         {
           name: string;
           declarations: number;
+          exactPasses: number;
           ambiguousPasses: number;
           rejects: number;
           proofRejects: number;
@@ -727,10 +761,11 @@ const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: Pr
     >((acc, row) => {
       const key = resolveCategory(row.category, row.attribute, propertyCategoryDictionary) || '未分类';
       if (!acc[key]) {
-        acc[key] = { name: key, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
+        acc[key] = { name: key, declarations: 0, exactPasses: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
       }
 
       acc[key].declarations += row.declarations;
+      acc[key].exactPasses += resolveExactPasses(row);
       acc[key].ambiguousPasses += row.ambiguousPasses;
       acc[key].rejects += row.rejects;
       acc[key].proofRejects += row.proofRejects;
@@ -744,7 +779,7 @@ const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: Pr
         ...item,
         value: total ? item.declarations / total : 0,
         proofAccuracy: safeDivide(item.declarations - item.ambiguousPasses - item.proofRejects, item.declarations),
-        exactPassRate: safeDivide(item.declarations - item.ambiguousPasses - item.rejects, item.declarations),
+        exactPassRate: safeDivide(item.exactPasses, item.declarations),
       };
     })
     .sort((a, b) => b.value - a.value);
@@ -757,6 +792,7 @@ const aggregateSessionShares = (rows: ImportedRow[]) =>
         {
           name: string;
           declarations: number;
+          exactPasses: number;
           ambiguousPasses: number;
           rejects: number;
           proofRejects: number;
@@ -765,10 +801,11 @@ const aggregateSessionShares = (rows: ImportedRow[]) =>
     >((acc, row) => {
       const key = row.session || '未识别场次';
       if (!acc[key]) {
-        acc[key] = { name: key, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
+        acc[key] = { name: key, declarations: 0, exactPasses: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
       }
 
       acc[key].declarations += row.declarations;
+      acc[key].exactPasses += resolveExactPasses(row);
       acc[key].ambiguousPasses += row.ambiguousPasses;
       acc[key].rejects += row.rejects;
       acc[key].proofRejects += row.proofRejects;
@@ -782,7 +819,7 @@ const aggregateSessionShares = (rows: ImportedRow[]) =>
         ...item,
         value: total ? item.declarations / total : 0,
         proofAccuracy: safeDivide(item.declarations - item.ambiguousPasses - item.proofRejects, item.declarations),
-        exactPassRate: safeDivide(item.declarations - item.ambiguousPasses - item.rejects, item.declarations),
+        exactPassRate: safeDivide(item.exactPasses, item.declarations),
       };
     })
     .sort((a, b) => b.declarations - a.declarations);
@@ -792,12 +829,13 @@ const aggregateCompareTrend = (leftRows: ImportedRow[], rightRows: ImportedRow[]
 
   const buildSeries = (rows: ImportedRow[]) => {
     const grouped = rows.reduce<
-      Record<string, { declarations: number; ambiguous: number; rejects: number; proofRejects: number }>
+      Record<string, { declarations: number; exactPasses: number; ambiguous: number; rejects: number; proofRejects: number }>
     >((acc, row) => {
       if (!acc[row.date]) {
-        acc[row.date] = { declarations: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
+        acc[row.date] = { declarations: 0, exactPasses: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
       }
       acc[row.date].declarations += row.declarations;
+      acc[row.date].exactPasses += resolveExactPasses(row);
       acc[row.date].ambiguous += row.ambiguousPasses;
       acc[row.date].rejects += row.rejects;
       acc[row.date].proofRejects += row.proofRejects;
@@ -811,7 +849,7 @@ const aggregateCompareTrend = (leftRows: ImportedRow[], rightRows: ImportedRow[]
         date,
         declarations: item.declarations,
         proofAccuracy: safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations),
-        exactPassRate: safeRate(item.declarations - item.ambiguous - item.rejects, item.declarations),
+        exactPassRate: safeRate(item.exactPasses, item.declarations),
       }));
   };
 
@@ -876,14 +914,15 @@ const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch'
 
   return Object.values(
     rows.reduce<
-      Record<string, { name: string; declarations: number; ambiguous: number; rejects: number; proofRejects: number }>
+      Record<string, { name: string; declarations: number; exactPasses: number; ambiguous: number; rejects: number; proofRejects: number }>
     >((acc, row) => {
       const name = row[key];
       if (!acc[name]) {
-        acc[name] = { name, declarations: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
+        acc[name] = { name, declarations: 0, exactPasses: 0, ambiguous: 0, rejects: 0, proofRejects: 0 };
       }
 
       acc[name].declarations += row.declarations;
+      acc[name].exactPasses += resolveExactPasses(row);
       acc[name].ambiguous += row.ambiguousPasses;
       acc[name].rejects += row.rejects;
       acc[name].proofRejects += row.proofRejects;
@@ -894,7 +933,7 @@ const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch'
       name: item.name,
       declarations: item.declarations,
       proofAccuracy: safeRate(item.declarations - item.ambiguous - item.proofRejects, item.declarations),
-      exactPassRate: safeRate(item.declarations - item.ambiguous - item.rejects, item.declarations),
+      exactPassRate: safeRate(item.exactPasses, item.declarations),
     }))
     .sort((a, b) => (key === 'batch' ? getBatchOrder(a.name) - getBatchOrder(b.name) : b.declarations - a.declarations))
     .slice(0, 10);
@@ -1429,17 +1468,18 @@ const aggregateQualityDimension = (
   propertyCategoryDictionary: PropertyCategoryEntry[] = [],
 ) =>
   Object.values(
-    rows.reduce<Record<string, { name: string; declarations: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
+    rows.reduce<Record<string, { name: string; declarations: number; exactPasses: number; ambiguousPasses: number; rejects: number; proofRejects: number }>>(
       (acc, row) => {
         const name =
           key === 'category'
             ? resolveCategory(row.category, row.attribute, propertyCategoryDictionary)
             : String(row[key] || '未分类');
         if (!acc[name]) {
-          acc[name] = { name, declarations: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
+          acc[name] = { name, declarations: 0, exactPasses: 0, ambiguousPasses: 0, rejects: 0, proofRejects: 0 };
         }
 
         acc[name].declarations += row.declarations;
+        acc[name].exactPasses += resolveExactPasses(row);
         acc[name].ambiguousPasses += row.ambiguousPasses;
         acc[name].rejects += row.rejects;
         acc[name].proofRejects += row.proofRejects;
@@ -1458,6 +1498,7 @@ const aggregateQualityDimension = (
           category: '',
           attribute: '',
           declarations: item.declarations,
+          exactPasses: item.exactPasses,
           ambiguousPasses: item.ambiguousPasses,
           rejects: item.rejects,
           proofRejects: item.proofRejects,
@@ -3182,8 +3223,11 @@ function App() {
                     <ChevronDown size={16} className="shrink-0" />
                   </summary>
                   <ul className="mt-3 space-y-2 text-xs leading-6 text-slate-300">
+                    <li>精准通过次数：第一次在线审核结果为通过，且第一次在线审核变动属性值不为空。</li>
+                    <li>模糊通过次数：第一次在线审核结果为通过，且第一次在线审核变动属性值为空。</li>
+                    <li>多属性申请按整单影响处理：同一单满足精准或模糊条件时，申报属性都会计入对应次数。</li>
+                    <li>精准通过率 = 精准通过次数 / 申报次数</li>
                     <li>举证准确率 = (申报次数 - 模糊通过次数 - 举证未通过次数) / 申报次数</li>
-                    <li>精准通过率 = (申报次数 - 模糊通过次数 - 未通过次数) / 申报次数</li>
                     <li>模棱两可率 = 模糊通过次数 / 申报次数</li>
                     <li>拒绝率 = 未通过次数 / 申报次数</li>
                   </ul>

@@ -118,6 +118,24 @@ npm run import:quality
 QUALITY_IMPORT_FILE="/Users/a144522/Downloads/预质检每日数据/0608.xlsx" npm run import:quality
 ```
 
+## 同步到本地和 ECS
+
+本地看板默认读取本地缓存，避免每次打开都从 ECS 拉取大体量质量数据导致加载慢。
+
+如果希望一次导入同时写入本地和 ECS，使用：
+
+```bash
+QUALITY_IMPORT_FILE="/Users/a144522/Downloads/预质检每日数据/0608.xlsx" npm run import:quality:sync
+```
+
+也可以手动指定多个目标地址，逗号分隔：
+
+```bash
+QUALITY_API_BASE_URLS="http://127.0.0.1:3000,http://39.107.221.251:3000" npm run import:quality -- "/Users/a144522/Downloads/预质检每日数据/0608.xlsx"
+```
+
+这样 ECS 仍作为老板访问的统一数据源，本地则保留即时调试缓存。
+
 ## 预检模式
 
 只解析文件、不写入看板：

@@ -6,7 +6,10 @@ import XLSX from 'xlsx';
 
 const DEFAULT_DOWNLOAD_DIR = path.join(process.env.HOME || '.', 'Downloads', '预质检每日数据');
 const downloadDir = process.env.QUALITY_DOWNLOAD_DIR || DEFAULT_DOWNLOAD_DIR;
-const apiBaseUrl = (process.env.QUALITY_API_BASE_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+const apiBaseUrls = (process.env.QUALITY_API_BASE_URLS || process.env.QUALITY_API_BASE_URL || 'http://127.0.0.1:3000')
+  .split(',')
+  .map((url) => url.trim().replace(/\/$/, ''))
+  .filter(Boolean);
 const explicitFile = process.env.QUALITY_IMPORT_FILE || process.argv[2] || '';
 const dryRun = process.env.QUALITY_IMPORT_DRY_RUN === '1';
 
@@ -114,6 +117,9 @@ const parseWorkbook = async (filePath) => {
         category: String(record['属性项分类'] ?? '').trim(),
         attribute: String(record[attributeHeader] ?? '').trim(),
         declarations: toNumber(record['申报次数']),
+        exactPasses: Object.prototype.hasOwnProperty.call(record, '精准通过次数')
+          ? toNumber(record['精准通过次数'])
+          : undefined,
         ambiguousPasses: toNumber(record['模糊通过次数']),
         rejects: toNumber(record['未通过次数']),
         proofRejects: toNumber(record['举证未通过次数']),
@@ -161,7 +167,7 @@ const resolveFile = async () => {
   return files[0].filePath;
 };
 
-const mergeDataset = async (payload) => {
+const mergeDataset = async (payload, apiBaseUrl) => {
   const response = await fetch(`${apiBaseUrl}/api/dataset/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -195,13 +201,20 @@ const main = async () => {
     return;
   }
 
-  const merged = await mergeDataset(parsed);
+  const results = [];
+  for (const apiBaseUrl of apiBaseUrls) {
+    const merged = await mergeDataset(parsed, apiBaseUrl);
+    results.push({
+      apiBaseUrl,
+      totalRows: merged.rows?.length ?? 0,
+    });
+  }
+
   console.log(JSON.stringify({
     importedFile: parsed.sourceName,
     sheetName: parsed.sheetName,
     importedRows: parsed.rows.length,
-    totalRows: merged.rows?.length ?? 0,
-    apiBaseUrl,
+    targets: results,
   }, null, 2));
 };
 

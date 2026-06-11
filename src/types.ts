@@ -9,6 +9,7 @@ export interface ImportedRow {
   category: string;
   attribute: string;
   declarations: number;
+  exactPasses?: number;
   ambiguousPasses: number;
   rejects: number;
   proofRejects: number;
