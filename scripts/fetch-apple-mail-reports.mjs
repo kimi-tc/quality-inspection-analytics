@@ -81,40 +81,58 @@ on saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, 
 end saveOneAttachment
 
 tell application "Mail"
-  if accountName is not "" then
-    if mailboxName is not "" then
-      set targetMailbox to mailbox mailboxName of account accountName
-    else
-      set targetMailbox to inbox of account accountName
-    end if
-  else
-    if mailboxName is not "" then
-      set targetMailbox to mailbox mailboxName
-    else
-      set targetMailbox to inbox
-    end if
+  set targetMailboxes to {}
+
+  if accountName is not "" and mailboxName is not "" then
+    try
+      set end of targetMailboxes to mailbox mailboxName of account accountName
+    end try
   end if
 
-  set reportMessages to messages of targetMailbox whose date received ≥ sinceDate
-  repeat with theMessage in reportMessages
-    set theSubject to subject of theMessage
-    set reportType to ""
-    set targetDir to ""
-    if theSubject contains qualitySubject then
-      set reportType to "quality"
-      set targetDir to qualityDir
-    else if theSubject contains efficiencySubject then
-      set reportType to "efficiency"
-      set targetDir to efficiencyDir
-    end if
+  if accountName is not "" and mailboxName is "" then
+    try
+      set end of targetMailboxes to inbox of account accountName
+    end try
+  end if
 
-    if reportType is not "" then
-      set messageId to id of theMessage as text
-      repeat with theAttachment in mail attachments of theMessage
-        set savedLine to my saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, dryRun)
-        if savedLine is not "" then set end of savedLines to savedLine
-      end repeat
-    end if
+  if accountName is "" and mailboxName is not "" then
+    try
+      set end of targetMailboxes to mailbox mailboxName
+    end try
+  end if
+
+  if (count of targetMailboxes) is 0 then
+    try
+      set end of targetMailboxes to inbox
+    end try
+  end if
+
+  if (count of targetMailboxes) is 0 then
+    error "未能定位邮件收件箱。请清空 APPLE_MAILBOX_NAME 后重试，或检查邮件.app 是否已完成收信。"
+  end if
+
+  repeat with targetMailbox in targetMailboxes
+    set reportMessages to messages of targetMailbox whose date received ≥ sinceDate
+    repeat with theMessage in reportMessages
+      set theSubject to subject of theMessage
+      set reportType to ""
+      set targetDir to ""
+      if theSubject contains qualitySubject then
+        set reportType to "quality"
+        set targetDir to qualityDir
+      else if theSubject contains efficiencySubject then
+        set reportType to "efficiency"
+        set targetDir to efficiencyDir
+      end if
+
+      if reportType is not "" then
+        set messageId to id of theMessage as text
+        repeat with theAttachment in mail attachments of theMessage
+          set savedLine to my saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, dryRun)
+          if savedLine is not "" then set end of savedLines to savedLine
+        end repeat
+      end if
+    end repeat
   end repeat
 end tell
 
