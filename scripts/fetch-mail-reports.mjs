@@ -88,15 +88,19 @@ const isExcelAttachment = (attachment) =>
     'application/vnd.ms-excel',
   ].includes(String(attachment.contentType || '').toLowerCase());
 
-const saveAttachment = async ({ messageUid, subject, attachment, rule, state }) => {
+const formatDateToken = (value) => {
+  const date = value instanceof Date && !Number.isNaN(value.getTime()) ? value : new Date();
+  return date.toISOString().slice(0, 10);
+};
+
+const saveAttachment = async ({ messageUid, subject, messageDate, attachment, rule, state }) => {
   const originalName = sanitizeFileName(attachment.filename || `${rule.type}.xlsx`);
   const stateKey = `${messageUid}:${rule.type}:${originalName}:${attachment.size || attachment.content?.length || 0}`;
   if (state.downloaded.includes(stateKey)) {
     return { skipped: true, reason: 'already-downloaded', filePath: '' };
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const fileName = `${rule.type}_${timestamp}_${originalName}`;
+  const fileName = `${rule.type}_${formatDateToken(messageDate)}_${messageUid}_${originalName}`;
   const targetPath = path.join(rule.targetDir, fileName);
   const inboxPath = path.join(inboxDir, fileName);
 
@@ -152,6 +156,7 @@ const main = async () => {
         const result = await saveAttachment({
           messageUid: message.uid,
           subject,
+          messageDate: message.envelope?.date,
           attachment,
           rule,
           state,

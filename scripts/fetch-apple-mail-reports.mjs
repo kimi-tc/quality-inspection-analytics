@@ -63,11 +63,21 @@ on isExcelFile(fileName)
   return lowerName ends with ".xlsx" or lowerName ends with ".xls"
 end isExcelFile
 
-on saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, dryRun)
+on dateToken(theDate)
+  set y to year of theDate as text
+  set m to month of theDate as integer
+  set d to day of theDate as integer
+  if m < 10 then set m to "0" & m
+  if d < 10 then set d to "0" & d
+  return y & "-" & m & "-" & d
+end dateToken
+
+on saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, receivedDate, dryRun)
   set originalName to my sanitizeFileName(name of theAttachment)
   if not my isExcelFile(originalName) then return ""
-  set targetPath to targetDir & "/" & reportType & "_" & messageId & "_" & originalName
-  set inboxPath to inboxDir & "/" & reportType & "_" & messageId & "_" & originalName
+  set fileName to reportType & "_" & my dateToken(receivedDate) & "_" & messageId & "_" & originalName
+  set targetPath to targetDir & "/" & fileName
+  set inboxPath to inboxDir & "/" & fileName
   if dryRun is false then
     try
       do shell script "test -f " & quoted form of targetPath
@@ -127,8 +137,9 @@ tell application "Mail"
 
       if reportType is not "" then
         set messageId to id of theMessage as text
+        set receivedDate to date received of theMessage
         repeat with theAttachment in mail attachments of theMessage
-          set savedLine to my saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, dryRun)
+          set savedLine to my saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, receivedDate, dryRun)
           if savedLine is not "" then set end of savedLines to savedLine
         end repeat
       end if
