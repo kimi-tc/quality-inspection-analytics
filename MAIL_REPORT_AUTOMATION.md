@@ -64,6 +64,33 @@ npm run mailapp:import:sync
 
 首次运行时，macOS 可能会弹出权限提示，请允许终端/Node 控制“邮件.app”。
 
+### 每日 8:30 自动同步
+
+安装 Mac mini 定时任务：
+
+```bash
+cd ~/quality-inspection-analytics
+chmod +x scripts/run-mailapp-import-sync.sh
+mkdir -p ~/Library/LaunchAgents
+cp deploy/com.kimi.weekly-inspection-mail-import.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.kimi.weekly-inspection-mail-import.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.kimi.weekly-inspection-mail-import.plist
+launchctl list | grep weekly-inspection-mail-import
+```
+
+立即手动触发一次定时任务，用于验证：
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.kimi.weekly-inspection-mail-import"
+```
+
+查看日志：
+
+```bash
+tail -100 ~/Library/Logs/weekly-inspection-mail-import.log
+tail -100 ~/Library/Logs/weekly-inspection-mail-import-error.log
+```
+
 ## 1. 本地配置
 
 以下是 IMAP 模式配置；如果使用邮件.app 模式，可以不填写 `FEISHU_EMAIL_AUTH_CODE`。
