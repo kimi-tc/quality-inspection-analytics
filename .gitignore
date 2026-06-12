@@ -10,3 +10,4 @@ data/shared-dataset.json
 data/*.json
 !.gitkeep
 generated-sql/
+reports/
