@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -127,6 +128,48 @@ const emptyEfficiencyDataset: EfficiencyDataset = {
   importHistory: [],
 };
 
+type JsonFileCache<T> = {
+  mtimeMs: number;
+  value: T;
+};
+
+const jsonFileCache = new Map<string, JsonFileCache<unknown>>();
+
+const readCachedJsonFile = async <T,>(
+  filePath: string,
+  fallback: T,
+  normalize: (parsed: T) => T | null,
+): Promise<T> => {
+  try {
+    const stat = await fs.stat(filePath);
+    const cached = jsonFileCache.get(filePath) as JsonFileCache<T> | undefined;
+    if (cached && cached.mtimeMs === stat.mtimeMs) {
+      return cached.value;
+    }
+
+    const content = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(content) as T;
+    const normalized = normalize(parsed);
+
+    if (!normalized) {
+      return fallback;
+    }
+
+    jsonFileCache.set(filePath, {
+      mtimeMs: stat.mtimeMs,
+      value: normalized,
+    });
+
+    return normalized;
+  } catch {
+    return fallback;
+  }
+};
+
+const invalidateJsonFileCache = (filePath: string) => {
+  jsonFileCache.delete(filePath);
+};
+
 const readSeedPropertyCategoryDictionary = async (): Promise<PropertyCategoryEntry[]> => {
   try {
     const content = await fs.readFile(propertyCategorySeedFile, 'utf8');
@@ -158,6 +201,7 @@ const sharedDataApiPrefixes = [
 ];
 
 app.use(express.json({ limit: '100mb' }));
+app.use(compression());
 
 app.get('/api/data-source', (_req, res) => {
   res.json({
@@ -320,45 +364,35 @@ const ensureAuditorTeamDictionaryFile = async () => {
 
 const readDataset = async (): Promise<SharedDataset> => {
   await ensureDataFile();
-  const content = await fs.readFile(dataFile, 'utf8');
-
-  try {
-    const parsed = JSON.parse(content) as SharedDataset;
-    if (!Array.isArray(parsed.rows)) {
-      return emptyDataset;
-    }
-    return parsed;
-  } catch {
-    return emptyDataset;
-  }
+  return readCachedJsonFile<SharedDataset>(dataFile, emptyDataset, (parsed) =>
+    Array.isArray(parsed.rows) ? parsed : null,
+  );
 };
 
 const writeDataset = async (dataset: SharedDataset) => {
   await ensureDataFile();
   await fs.writeFile(dataFile, JSON.stringify(dataset, null, 2), 'utf8');
+  invalidateJsonFileCache(dataFile);
 };
 
 const readEfficiencyDataset = async (): Promise<EfficiencyDataset> => {
   await ensureEfficiencyDataFile();
-  const content = await fs.readFile(efficiencyDataFile, 'utf8');
-
-  try {
-    const parsed = JSON.parse(content) as EfficiencyDataset;
+  return readCachedJsonFile<EfficiencyDataset>(efficiencyDataFile, emptyEfficiencyDataset, (parsed) => {
     if (!Array.isArray(parsed.rows)) {
-      return emptyEfficiencyDataset;
+      return null;
     }
+
     return {
       ...parsed,
       rows: mergeEfficiencyRows([], parsed.rows),
     };
-  } catch {
-    return emptyEfficiencyDataset;
-  }
+  });
 };
 
 const writeEfficiencyDataset = async (dataset: EfficiencyDataset) => {
   await ensureEfficiencyDataFile();
   await fs.writeFile(efficiencyDataFile, JSON.stringify(dataset, null, 2), 'utf8');
+  invalidateJsonFileCache(efficiencyDataFile);
 };
 
 const readPropertyCategoryDictionary = async (): Promise<PropertyCategoryEntry[]> => {
@@ -444,6 +478,7 @@ const createImportRecord = (
 
 app.get('/api/dataset', async (_req, res) => {
   const dataset = await readDataset();
+  res.setHeader('Cache-Control', 'private, max-age=30, must-revalidate');
   res.json(dataset);
 });
 
@@ -477,6 +512,7 @@ app.delete('/api/dataset', async (_req, res) => {
 
 app.get('/api/efficiency-dataset', async (_req, res) => {
   const dataset = await readEfficiencyDataset();
+  res.setHeader('Cache-Control', 'private, max-age=30, must-revalidate');
   res.json(dataset);
 });
 
