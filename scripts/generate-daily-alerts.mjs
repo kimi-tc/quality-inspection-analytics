@@ -12,6 +12,7 @@ dotenv.config({ path: path.join(projectDir, '.env'), quiet: true });
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data'));
 const outputDir = path.resolve(process.env.ALERT_OUTPUT_DIR || path.join(projectDir, 'reports', 'alerts'));
 const apiBaseUrl = (process.env.ALERT_API_BASE_URL || '').trim().replace(/\/$/, '');
+const dashboardPublicUrl = (process.env.DASHBOARD_PUBLIC_URL || '').trim();
 const requestedDate = process.env.ALERT_DATE || process.argv[2] || '';
 const shouldPushToFeishu = process.env.ALERT_PUSH_TO_FEISHU === '1';
 const feishuWebhookUrl = (process.env.FEISHU_WEBHOOK_URL || '').trim();
@@ -335,6 +336,17 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
 };
 
 const buildFeishuPayload = (text) => {
+  const isFlowWebhook = feishuWebhookUrl.includes('/flow/api/trigger-webhook/');
+  if (isFlowWebhook) {
+    return {
+      text,
+      title: `预质检每日预警`,
+      content: {
+        text,
+      },
+    };
+  }
+
   const payload = {
     msg_type: 'text',
     content: {
@@ -618,7 +630,7 @@ const main = async () => {
     Math.abs(Number(b.movement || 0)) - Math.abs(Number(a.movement || 0))
   ));
 
-  const dataSource = apiBaseUrl || dataDir;
+  const dataSource = dashboardPublicUrl || apiBaseUrl || dataDir;
   const message = buildMessage({
     targetDate,
     baselineDates,
