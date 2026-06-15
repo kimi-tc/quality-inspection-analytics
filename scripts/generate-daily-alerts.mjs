@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import dotenv from 'dotenv';
 
 const projectDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+dotenv.config({ path: path.join(projectDir, '.mail-reports.env'), quiet: true });
 dotenv.config({ path: path.join(projectDir, '.env'), quiet: true });
 
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data'));
 const outputDir = path.resolve(process.env.ALERT_OUTPUT_DIR || path.join(projectDir, 'reports', 'alerts'));
 const apiBaseUrl = (process.env.ALERT_API_BASE_URL || '').trim().replace(/\/$/, '');
 const requestedDate = process.env.ALERT_DATE || process.argv[2] || '';
+const shouldPushToFeishu = process.env.ALERT_PUSH_TO_FEISHU === '1';
+const feishuWebhookUrl = (process.env.FEISHU_WEBHOOK_URL || '').trim();
+const feishuWebhookSecret = (process.env.FEISHU_WEBHOOK_SECRET || '').trim();
 
 const thresholds = {
   ambiguousTarget: Number(process.env.ALERT_AMBIGUOUS_TARGET || 0.07),
@@ -329,6 +334,79 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
   return lines.join('\n');
 };
 
+const buildFeishuPayload = (text) => {
+  const payload = {
+    msg_type: 'text',
+    content: {
+      text,
+    },
+  };
+
+  if (!feishuWebhookSecret) {
+    return payload;
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const stringToSign = `${timestamp}\n${feishuWebhookSecret}`;
+  const sign = crypto
+    .createHmac('sha256', stringToSign)
+    .update('')
+    .digest('base64');
+
+  return {
+    ...payload,
+    timestamp,
+    sign,
+  };
+};
+
+const pushToFeishu = async (text) => {
+  if (!shouldPushToFeishu) {
+    return {
+      skipped: true,
+      reason: 'ALERT_PUSH_TO_FEISHU is not 1',
+    };
+  }
+
+  if (!feishuWebhookUrl) {
+    if (process.env.ALERT_PUSH_STRICT === '1') {
+      throw new Error('已启用飞书推送，但未配置 FEISHU_WEBHOOK_URL');
+    }
+
+    return {
+      skipped: true,
+      reason: 'FEISHU_WEBHOOK_URL is not configured',
+    };
+  }
+
+  const response = await fetch(feishuWebhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(buildFeishuPayload(text)),
+    signal: AbortSignal.timeout(Number(process.env.FEISHU_WEBHOOK_TIMEOUT_MS || 30000)),
+  });
+
+  const bodyText = await response.text();
+  let body = {};
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    body = { raw: bodyText };
+  }
+
+  if (!response.ok || (body && typeof body === 'object' && 'code' in body && body.code !== 0)) {
+    throw new Error(`飞书推送失败，HTTP ${response.status}：${bodyText}`);
+  }
+
+  return {
+    skipped: false,
+    status: response.status,
+    body,
+  };
+};
+
 const main = async () => {
   const qualityDataset = await fetchJson('/api/dataset', path.join(dataDir, 'shared-dataset.json'), { rows: [] });
   const efficiencyDataset = await fetchJson('/api/efficiency-dataset', path.join(dataDir, 'efficiency-dataset.json'), { rows: [] });
@@ -579,6 +657,8 @@ const main = async () => {
   fs.writeFileSync(jsonPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
   fs.writeFileSync(textPath, `${message}\n`, 'utf8');
 
+  const feishuResult = await pushToFeishu(message);
+
   console.log(message);
   console.log('');
   console.log(JSON.stringify({
@@ -586,6 +666,7 @@ const main = async () => {
     alertCount: alerts.length,
     jsonPath,
     textPath,
+    feishu: feishuResult,
   }, null, 2));
 };
 

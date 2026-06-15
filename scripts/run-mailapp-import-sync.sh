@@ -18,6 +18,6 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting mail report import sync..."
 "$NPM_BIN" run mailapp:import:sync
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Mail report import sync finished."
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Generating daily quality report..."
-"$NPM_BIN" run report:daily
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Daily quality report generated."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Generating daily alerts and pushing to Feishu when configured..."
+"$NPM_BIN" run alert:daily:push
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Daily alert task finished."

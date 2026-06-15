@@ -23,6 +23,7 @@
     "mailapp:import:sync": "MAIL_REPORT_SYNC_TO_ECS=1 node scripts/import-apple-mail-reports.mjs",
     "report:daily": "node scripts/generate-daily-report.mjs",
     "alert:daily": "node scripts/generate-daily-alerts.mjs",
+    "alert:daily:push": "ALERT_PUSH_TO_FEISHU=1 node scripts/generate-daily-alerts.mjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
