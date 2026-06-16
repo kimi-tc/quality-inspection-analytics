@@ -907,6 +907,7 @@ const aggregateSessionCompareTrend = (
 const aggregateDimensionMetrics = (rows: ImportedRow[], key: 'session' | 'batch') => {
   const safeRate = (numerator: number, denominator: number) => (denominator ? numerator / denominator : 0);
   const getBatchOrder = (name: string) => {
+    if (name === '其他') return 999;
     const match = name.match(/第(\d+)批/);
     return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
   };

@@ -17,6 +17,7 @@ WITH cte AS (
             WHEN asae.online1_cheat_proof_flag_name RLIKE '预质检测试\\d+'
                 THEN CONCAT('第', REGEXP_EXTRACT(asae.online1_cheat_proof_flag_name, '预质检测试(\\d+)', 1), '批')
             WHEN asae.online1_cheat_proof_flag_name LIKE '%预质检测试%'     THEN '第1批'
+            ELSE '其他'
         END AS flag,
         asae.oneline1_property_names,
         CASE
