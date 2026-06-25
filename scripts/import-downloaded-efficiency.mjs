@@ -12,6 +12,7 @@ const apiBaseUrls = (process.env.EFFICIENCY_API_BASE_URLS || process.env.EFFICIE
   .filter(Boolean);
 const explicitFile = process.env.EFFICIENCY_IMPORT_FILE || process.argv[2] || '';
 const dryRun = process.env.EFFICIENCY_IMPORT_DRY_RUN === '1';
+const forceImport = process.env.EFFICIENCY_IMPORT_FORCE === '1';
 
 const requiredHeaders = [
   ['日期', 'dt'],
@@ -213,6 +214,21 @@ const resolveParsedWorkbook = async () => {
 };
 
 const mergeDataset = async (payload, apiBaseUrl) => {
+  if (!forceImport) {
+    const existingResponse = await fetch(`${apiBaseUrl}/api/efficiency-dataset`);
+    const existing = await existingResponse.json().catch(() => ({}));
+    const alreadyImported = Array.isArray(existing.importHistory)
+      && existing.importHistory.some((record) => record.sourceName === payload.sourceName);
+
+    if (alreadyImported) {
+      return {
+        skipped: true,
+        reason: 'sourceName already imported',
+        rows: existing.rows ?? [],
+      };
+    }
+  }
+
   const response = await fetch(`${apiBaseUrl}/api/efficiency-dataset/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -250,6 +266,8 @@ const main = async () => {
     const merged = await mergeDataset(parsed, apiBaseUrl);
     results.push({
       apiBaseUrl,
+      skipped: Boolean(merged.skipped),
+      reason: merged.reason,
       totalRows: merged.rows?.length ?? 0,
     });
   }

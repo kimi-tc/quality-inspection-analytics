@@ -22,6 +22,7 @@ const accountName = process.env.APPLE_MAIL_ACCOUNT_NAME || '';
 const qualitySubject = process.env.MAIL_REPORT_QUALITY_SUBJECT || '看板_基础数据';
 const efficiencySubject = process.env.MAIL_REPORT_EFFICIENCY_SUBJECT || '看板_人效';
 const dryRun = process.env.MAIL_REPORT_DRY_RUN === '1';
+const mailCheckDelaySeconds = Number(process.env.APPLE_MAIL_CHECK_DELAY_SECONDS || 15);
 
 const ensureDirs = async () => {
   await fs.mkdir(inboxDir, { recursive: true });
@@ -42,6 +43,7 @@ set accountName to ${q(accountName)}
 set qualitySubject to ${q(qualitySubject)}
 set efficiencySubject to ${q(efficiencySubject)}
 set dryRun to ${dryRun ? 'true' : 'false'}
+set mailCheckDelaySeconds to ${Number.isFinite(mailCheckDelaySeconds) ? mailCheckDelaySeconds : 15}
 set sinceDate to (current date) - (lookbackDays * days)
 set savedLines to {}
 
@@ -91,6 +93,11 @@ on saveOneAttachment(theAttachment, targetDir, inboxDir, reportType, messageId, 
 end saveOneAttachment
 
 tell application "Mail"
+  try
+    check for new mail
+    if mailCheckDelaySeconds > 0 then delay mailCheckDelaySeconds
+  end try
+
   set targetMailboxes to {}
 
   if accountName is not "" and mailboxName is not "" then
