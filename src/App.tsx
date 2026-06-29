@@ -2438,6 +2438,8 @@ function App() {
       ),
     [efficiencyImportHistory, qualityImportHistory],
   );
+  const [showAllImportHistory, setShowAllImportHistory] = useState(false);
+  const visibleImportHistory = showAllImportHistory ? allImportHistory : allImportHistory.slice(0, 6);
   const aiAnalysis = useMemo(
     () =>
       createAiAnalysis({
@@ -3895,7 +3897,7 @@ function App() {
 
                 <div className="space-y-3">
                   {allImportHistory.length ? (
-                    allImportHistory.map((record) => (
+                    visibleImportHistory.map((record) => (
                       <div key={record.id} className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3 md:grid-cols-[120px_minmax(0,1fr)_180px_120px] md:items-center">
                         <span
                           className={`w-fit rounded-full px-3 py-1 text-xs font-medium ${
@@ -3926,6 +3928,23 @@ function App() {
                     </div>
                   )}
                 </div>
+                {allImportHistory.length > 6 ? (
+                  <div className="mt-5 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowAllImportHistory((current) => !current)}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      {showAllImportHistory
+                        ? '收起历史记录'
+                        : `展开全部 ${formatInteger(allImportHistory.length)} 条记录`}
+                      <ChevronDown
+                        size={16}
+                        className={`transition ${showAllImportHistory ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                  </div>
+                ) : null}
               </section>
             </>
           ) : activeView === 'dictionary' ? (
