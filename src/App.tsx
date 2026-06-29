@@ -2059,7 +2059,22 @@ const generateModelAnalysis = async (payload: {
 const generateDailyAlerts = async (payload: {
   date?: string;
   push?: boolean;
-}): Promise<{ output: string; error?: string; pushed: boolean; generatedAt: string }> => {
+}): Promise<{
+  message: string;
+  meta?: {
+    targetDate?: string;
+    alertCount?: number;
+    textPath?: string;
+    feishu?: {
+      skipped?: boolean;
+      status?: number;
+      reason?: string;
+    };
+  } | null;
+  error?: string;
+  pushed: boolean;
+  generatedAt: string;
+}> => {
   const response = await fetch('/api/daily-alerts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2134,6 +2149,16 @@ function App() {
   const [aiEndDateFilter, setAiEndDateFilter] = useState(ALL_OPTION);
   const [dailyAlertDate, setDailyAlertDate] = useState('');
   const [dailyAlertOutput, setDailyAlertOutput] = useState('');
+  const [dailyAlertMeta, setDailyAlertMeta] = useState<{
+    targetDate?: string;
+    alertCount?: number;
+    textPath?: string;
+    feishu?: {
+      skipped?: boolean;
+      status?: number;
+      reason?: string;
+    };
+  } | null>(null);
   const [dailyAlertError, setDailyAlertError] = useState('');
   const [isDailyAlertRunning, setIsDailyAlertRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -2740,7 +2765,8 @@ function App() {
         date: dailyAlertDate || undefined,
         push,
       });
-      setDailyAlertOutput(response.output);
+      setDailyAlertOutput(response.message);
+      setDailyAlertMeta(response.meta ?? null);
     } catch (err) {
       setDailyAlertError(err instanceof Error ? err.message : '每日预警生成失败。');
     } finally {
@@ -4582,6 +4608,28 @@ function App() {
                 {dailyAlertError ? (
                   <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700">
                     {dailyAlertError}
+                  </div>
+                ) : null}
+
+                {dailyAlertMeta ? (
+                  <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-sky-100 bg-white/75 px-4 py-3 text-xs text-slate-500">
+                    <span className="rounded-full bg-sky-50 px-3 py-1 font-medium text-sky-700">
+                      日期：{dailyAlertMeta.targetDate || dailyAlertDate || '最新有数日'}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1">
+                      预警数：{formatInteger(dailyAlertMeta.alertCount ?? 0)}
+                    </span>
+                    <span
+                      className={`rounded-full px-3 py-1 font-medium ${
+                        dailyAlertMeta.feishu?.skipped === false
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-amber-50 text-amber-700'
+                      }`}
+                    >
+                      {dailyAlertMeta.feishu?.skipped === false
+                        ? `飞书已推送${dailyAlertMeta.feishu.status ? ` · HTTP ${dailyAlertMeta.feishu.status}` : ''}`
+                        : `未推送飞书${dailyAlertMeta.feishu?.reason ? ` · ${dailyAlertMeta.feishu.reason}` : ''}`}
+                    </span>
                   </div>
                 ) : null}
 

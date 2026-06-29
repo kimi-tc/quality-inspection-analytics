@@ -93,6 +93,19 @@ type DailyAlertRequest = {
   push?: boolean;
 };
 
+type DailyAlertMeta = {
+  targetDate?: string;
+  alertCount?: number;
+  jsonPath?: string;
+  textPath?: string;
+  feishu?: {
+    skipped?: boolean;
+    status?: number;
+    body?: unknown;
+    reason?: string;
+  };
+};
+
 const propertyCategoryOptions = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'];
 const normalizeDictionaryCategory = (value: string) => {
   const normalizedValue = value.trim();
@@ -104,6 +117,26 @@ const normalizeDictionaryCategory = (value: string) => {
   const mappedValue = legacyCategoryMap[normalizedValue] ?? normalizedValue;
 
   return propertyCategoryOptions.includes(mappedValue) ? mappedValue : '其他';
+};
+
+const parseDailyAlertOutput = (output: string): { message: string; meta: DailyAlertMeta | null } => {
+  const trimmedOutput = output.trim();
+  const jsonStart = trimmedOutput.lastIndexOf('\n{');
+  const jsonText = jsonStart >= 0 ? trimmedOutput.slice(jsonStart + 1).trim() : '';
+
+  if (!jsonText) {
+    return { message: trimmedOutput, meta: null };
+  }
+
+  try {
+    const meta = JSON.parse(jsonText) as DailyAlertMeta;
+    return {
+      message: trimmedOutput.slice(0, jsonStart).trim(),
+      meta,
+    };
+  } catch {
+    return { message: trimmedOutput, meta: null };
+  }
 };
 
 const __filename = fileURLToPath(import.meta.url);
@@ -636,8 +669,12 @@ app.post('/api/daily-alerts', async (req, res) => {
     });
   }
 
+  const parsedOutput = parseDailyAlertOutput(result.stdout);
+
   res.json({
     pushed: Boolean(body.push),
+    message: parsedOutput.message,
+    meta: parsedOutput.meta,
     output: result.stdout,
     error: result.stderr,
     generatedAt: new Date().toISOString(),
