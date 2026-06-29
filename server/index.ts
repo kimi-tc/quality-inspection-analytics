@@ -1,5 +1,6 @@
 import express from 'express';
 import compression from 'compression';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -85,6 +86,11 @@ type AiAnalysisRequest = {
     dateRange?: string;
     filters?: string;
   };
+};
+
+type DailyAlertRequest = {
+  date?: string;
+  push?: boolean;
 };
 
 const propertyCategoryOptions = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'];
@@ -588,6 +594,54 @@ app.post('/api/auditor-team-dictionary/reset', async (_req, res) => {
   const seed = await readSeedAuditorTeamDictionary();
   await writeAuditorTeamDictionary(seed);
   res.json({ entries: seed });
+});
+
+app.post('/api/daily-alerts', async (req, res) => {
+  const body = req.body as DailyAlertRequest;
+  const requestedDate = body.date?.trim() ?? '';
+
+  if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+  }
+
+  const publicDashboardUrl = (
+    process.env.DASHBOARD_PUBLIC_URL?.trim() ||
+    process.env.PUBLIC_URL?.trim() ||
+    'http://39.107.221.251:3000'
+  ).replace(/\/$/, '');
+  const result = spawnSync(process.execPath, ['scripts/generate-daily-alerts.mjs'], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      DASHBOARD_PUBLIC_URL: publicDashboardUrl,
+      ALERT_DATE: requestedDate,
+      ALERT_PUSH_TO_FEISHU: body.push ? '1' : '0',
+      ALERT_API_BASE_URL: '',
+    },
+    encoding: 'utf8',
+    timeout: Number(process.env.ALERT_UI_TIMEOUT_MS || 180000),
+    maxBuffer: 1024 * 1024 * 5,
+  });
+
+  if (result.error) {
+    return res.status(500).json({ message: result.error.message });
+  }
+
+  if (result.status !== 0) {
+    return res.status(500).json({
+      message: result.stderr?.trim() || result.stdout?.trim() || '每日预警生成失败',
+      output: result.stdout,
+      error: result.stderr,
+    });
+  }
+
+  res.json({
+    pushed: Boolean(body.push),
+    output: result.stdout,
+    error: result.stderr,
+    generatedAt: new Date().toISOString(),
+  });
 });
 
 app.post('/api/ai-analysis', async (req, res) => {

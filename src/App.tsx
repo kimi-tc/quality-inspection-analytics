@@ -2056,6 +2056,24 @@ const generateModelAnalysis = async (payload: {
   return body;
 };
 
+const generateDailyAlerts = async (payload: {
+  date?: string;
+  push?: boolean;
+}): Promise<{ output: string; error?: string; pushed: boolean; generatedAt: string }> => {
+  const response = await fetch('/api/daily-alerts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({ message: '每日预警接口返回异常，请稍后重试。' }));
+
+  if (!response.ok) {
+    throw new Error(body.message || '每日预警生成失败');
+  }
+
+  return body;
+};
+
 function App() {
   const [dataset, setDataset] = useState<ParsedWorkbook>(emptyWorkbook);
   const [efficiencyDataset, setEfficiencyDataset] = useState<ParsedEfficiencyWorkbook>(emptyEfficiencyWorkbook);
@@ -2112,6 +2130,12 @@ function App() {
   const [modelAnalysisError, setModelAnalysisError] = useState('');
   const [selectedDeepseekModel, setSelectedDeepseekModel] = useState('deepseek-v4-flash');
   const [customDeepseekModel, setCustomDeepseekModel] = useState('');
+  const [aiStartDateFilter, setAiStartDateFilter] = useState(ALL_OPTION);
+  const [aiEndDateFilter, setAiEndDateFilter] = useState(ALL_OPTION);
+  const [dailyAlertDate, setDailyAlertDate] = useState('');
+  const [dailyAlertOutput, setDailyAlertOutput] = useState('');
+  const [dailyAlertError, setDailyAlertError] = useState('');
+  const [isDailyAlertRunning, setIsDailyAlertRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -2201,6 +2225,23 @@ function App() {
     () => getDateCoverage([...dataset.rows, ...efficiencyDataset.rows]),
     [dataset.rows, efficiencyDataset.rows],
   );
+  const aiDateOptions = useMemo(
+    () => createDateOptions([...dataset.rows, ...efficiencyDataset.rows]),
+    [dataset.rows, efficiencyDataset.rows],
+  );
+  const aiWeekOptions = useMemo(() => createWeekOptions(aiDateOptions), [aiDateOptions]);
+  const aiFilteredRows = useMemo(
+    () => filterRowsByDateRange(dataset.rows, aiStartDateFilter, aiEndDateFilter),
+    [aiEndDateFilter, aiStartDateFilter, dataset.rows],
+  );
+  const aiFilteredEfficiencyRows = useMemo(
+    () => filterRowsByDateRange(efficiencyDataset.rows, aiStartDateFilter, aiEndDateFilter),
+    [aiEndDateFilter, aiStartDateFilter, efficiencyDataset.rows],
+  );
+  const aiDateCoverage = useMemo(
+    () => getDateCoverage([...aiFilteredRows, ...aiFilteredEfficiencyRows]),
+    [aiFilteredEfficiencyRows, aiFilteredRows],
+  );
 
   const overviewFilteredRows = useMemo(
     () =>
@@ -2263,6 +2304,20 @@ function App() {
   const categoryData = useMemo(
     () => aggregateCategories(filteredRows, propertyCategoryDictionary),
     [filteredRows, propertyCategoryDictionary],
+  );
+  const aiMetrics = useMemo(() => aggregateMetrics(aiFilteredRows), [aiFilteredRows]);
+  const aiTopAttributes = useMemo(() => aggregateAttributes(aiFilteredRows), [aiFilteredRows]);
+  const aiCategoryData = useMemo(
+    () => aggregateCategories(aiFilteredRows, propertyCategoryDictionary),
+    [aiFilteredRows, propertyCategoryDictionary],
+  );
+  const aiEfficiencyMetrics = useMemo(
+    () => aggregateEfficiency(aiFilteredEfficiencyRows),
+    [aiFilteredEfficiencyRows],
+  );
+  const aiEfficiencyRanking = useMemo(
+    () => aggregateEfficiencyRanking(aiFilteredEfficiencyRows),
+    [aiFilteredEfficiencyRows],
   );
   const sessionShareData = useMemo(() => aggregateSessionShares(filteredRows), [filteredRows]);
   const compareSessionOptions = useMemo(
@@ -2443,38 +2498,47 @@ function App() {
   const aiAnalysis = useMemo(
     () =>
       createAiAnalysis({
-        qualityMetrics: metrics,
-        qualityRows: filteredRows,
-        topAttributes,
-        categoryData,
-        efficiencyMetrics,
-        efficiencyRanking,
-        efficiencyRows: filteredEfficiencyRows,
+        qualityMetrics: aiMetrics,
+        qualityRows: aiFilteredRows,
+        topAttributes: aiTopAttributes,
+        categoryData: aiCategoryData,
+        efficiencyMetrics: aiEfficiencyMetrics,
+        efficiencyRanking: aiEfficiencyRanking,
+        efficiencyRows: aiFilteredEfficiencyRows,
         propertyCategoryDictionary,
       }),
-    [categoryData, efficiencyMetrics, efficiencyRanking, filteredEfficiencyRows, filteredRows, metrics, propertyCategoryDictionary, topAttributes],
+    [
+      aiCategoryData,
+      aiEfficiencyMetrics,
+      aiEfficiencyRanking,
+      aiFilteredEfficiencyRows,
+      aiFilteredRows,
+      aiMetrics,
+      aiTopAttributes,
+      propertyCategoryDictionary,
+    ],
   );
   const aiContext = useMemo(
     () => ({
-      qualityRows: filteredRows.length,
-      efficiencyRows: filteredEfficiencyRows.length,
+      qualityRows: aiFilteredRows.length,
+      efficiencyRows: aiFilteredEfficiencyRows.length,
       dateRange:
-        filteredRows.length > 0
-          ? `${filteredRows[0].date} ~ ${filteredRows[filteredRows.length - 1].date}`
+        aiDateCoverage.start && aiDateCoverage.end
+          ? `${aiDateCoverage.start} ~ ${aiDateCoverage.end}`
           : '暂无质量数据',
       filters: [
-        `日期=${formatDateDisplay(overviewStartDateFilter) || '全部'}~${formatDateDisplay(overviewEndDateFilter) || '全部'}`,
-        `场次=${overviewSessionFilter.length ? overviewSessionFilter.join('、') : ALL_OPTION}`,
-        `批次=${overviewBatchFilter.length ? overviewBatchFilter.join('、') : ALL_OPTION}`,
+        `AI日期=${formatDateDisplay(aiStartDateFilter) || '全部'}~${formatDateDisplay(aiEndDateFilter) || '全部'}`,
+        '场次=全部',
+        '批次=全部',
       ].join('；'),
     }),
     [
-      filteredEfficiencyRows.length,
-      filteredRows,
-      overviewBatchFilter,
-      overviewEndDateFilter,
-      overviewSessionFilter,
-      overviewStartDateFilter,
+      aiDateCoverage.end,
+      aiDateCoverage.start,
+      aiEndDateFilter,
+      aiFilteredEfficiencyRows.length,
+      aiFilteredRows.length,
+      aiStartDateFilter,
     ],
   );
   const activeDeepseekModel =
@@ -2664,6 +2728,23 @@ function App() {
       );
     } finally {
       setIsModelAnalyzing(false);
+    }
+  };
+
+  const runDailyAlert = async (push: boolean) => {
+    setIsDailyAlertRunning(true);
+    setDailyAlertError('');
+
+    try {
+      const response = await generateDailyAlerts({
+        date: dailyAlertDate || undefined,
+        push,
+      });
+      setDailyAlertOutput(response.output);
+    } catch (err) {
+      setDailyAlertError(err instanceof Error ? err.message : '每日预警生成失败。');
+    } finally {
+      setIsDailyAlertRunning(false);
     }
   };
 
@@ -4231,6 +4312,59 @@ function App() {
             </>
           ) : (
             <>
+              <section className="mt-8 rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">AI Scope</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">AI 分析范围</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">
+                      这里的日期只影响 AI 分析、规则草稿和飞书预警，不会改变首页、属性项或人效模块的筛选。
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-700">
+                    当前范围：{aiContext.dateRange}
+                  </span>
+                </div>
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)] xl:items-end">
+                  <DateRangeFilter
+                    label="AI 日期区间"
+                    startValue={aiStartDateFilter}
+                    endValue={aiEndDateFilter}
+                    options={aiDateOptions}
+                    onStartChange={(value) => {
+                      setAiStartDateFilter(value);
+                      setModelAnalysis(null);
+                    }}
+                    onEndChange={(value) => {
+                      setAiEndDateFilter(value);
+                      setModelAnalysis(null);
+                    }}
+                    onClear={() => {
+                      setAiStartDateFilter(ALL_OPTION);
+                      setAiEndDateFilter(ALL_OPTION);
+                      setModelAnalysis(null);
+                    }}
+                    compact
+                  />
+                  <WeekQuickSelect
+                    label="AI 周区间"
+                    value={getWeekValue(aiStartDateFilter, aiEndDateFilter, aiWeekOptions)}
+                    options={aiWeekOptions}
+                    onChange={(week) => {
+                      setAiStartDateFilter(week.start);
+                      setAiEndDateFilter(week.end);
+                      setModelAnalysis(null);
+                    }}
+                    onClear={() => {
+                      setAiStartDateFilter(ALL_OPTION);
+                      setAiEndDateFilter(ALL_OPTION);
+                      setModelAnalysis(null);
+                    }}
+                    compact
+                  />
+                </div>
+              </section>
+
               <section className="mt-8 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <p className="text-sm uppercase tracking-[0.26em] text-slate-400">AI Analysis</p>
@@ -4252,8 +4386,8 @@ function App() {
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <StatCard title="质量记录" value={formatInteger(dataset.rows.length)} hint="来自质量周数据" tone="blue" icon={<Database size={18} />} />
-                    <StatCard title="人效记录" value={formatInteger(efficiencyDataset.rows.length)} hint="来自人效周数据" tone="emerald" icon={<Users size={18} />} />
+                    <StatCard title="质量记录" value={formatInteger(aiFilteredRows.length)} hint="当前 AI 范围内" tone="blue" icon={<Database size={18} />} />
+                    <StatCard title="人效记录" value={formatInteger(aiFilteredEfficiencyRows.length)} hint="当前 AI 范围内" tone="emerald" icon={<Users size={18} />} />
                   </div>
                 </div>
 
@@ -4383,6 +4517,75 @@ function App() {
                     <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-slate-600">过滤：{aiContext.filters}</div>
                   </div>
                 )}
+              </section>
+
+              <section className="mt-8 rounded-[28px] border border-sky-100 bg-[linear-gradient(135deg,_#f8fbff_0%,_#ffffff_55%,_#eff6ff_100%)] p-6 shadow-[0_18px_45px_rgba(37,99,235,0.07)]">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm uppercase tracking-[0.26em] text-sky-500">Feishu Alert Push</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">飞书每日预警推送</h2>
+                    <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+                      嵌入现有每日预警脚本，可先生成预览；确认后再推送到已配置的飞书机器人。
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:min-w-[320px]">
+                    <label className="text-xs uppercase tracking-[0.2em] text-slate-400">预警日期</label>
+                    <input
+                      type="date"
+                      value={dailyAlertDate}
+                      max={latestDataDate || undefined}
+                      onChange={(event) => {
+                        setDailyAlertDate(event.target.value);
+                        setDailyAlertError('');
+                      }}
+                      className="h-12 rounded-2xl border border-sky-100 bg-white px-4 text-sm font-medium text-slate-700 outline-none transition focus:border-sky-300 focus:ring-4 focus:ring-sky-100"
+                    />
+                    <p className="text-xs text-slate-400">
+                      留空则使用最新有质量数据日期；当前最新数据：{latestDataDate || '暂无'}。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void runDailyAlert(false)}
+                    disabled={isDailyAlertRunning}
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-sky-100 bg-white px-4 text-sm font-medium text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                  >
+                    <ClipboardList size={16} />
+                    {isDailyAlertRunning ? '生成中...' : '生成预览'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runDailyAlert(true)}
+                    disabled={isDailyAlertRunning}
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 text-sm font-medium text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                  >
+                    <ArrowUpRight size={16} />
+                    {isDailyAlertRunning ? '推送中...' : '推送飞书'}
+                  </button>
+                  {dailyAlertOutput ? (
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard?.writeText(dailyAlertOutput)}
+                      className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <ClipboardList size={16} />
+                      复制结果
+                    </button>
+                  ) : null}
+                </div>
+
+                {dailyAlertError ? (
+                  <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700">
+                    {dailyAlertError}
+                  </div>
+                ) : null}
+
+                <pre className="mt-5 max-h-[420px] overflow-auto whitespace-pre-wrap rounded-2xl border border-sky-100 bg-white/85 p-4 text-sm leading-7 text-slate-700">
+                  {dailyAlertOutput || '点击“生成预览”后，这里会展示即将发送到飞书的每日预警文本。'}
+                </pre>
               </section>
 
               <section className="mt-8 grid gap-6 xl:grid-cols-4">
