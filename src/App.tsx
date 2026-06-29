@@ -3857,6 +3857,7 @@ function App() {
                   sourceName={dataset.sourceName || '尚未导入文件'}
                   importedAt={dataset.importedAt}
                   rowCount={dataset.rows.length}
+                  importHistory={qualityImportHistory}
                   onImport={handleImport}
                   onDownloadTemplate={downloadTemplate}
                   onClear={clearData}
@@ -3873,6 +3874,7 @@ function App() {
                   sourceName={efficiencyDataset.sourceName || '尚未导入文件'}
                   importedAt={efficiencyDataset.importedAt}
                   rowCount={efficiencyDataset.rows.length}
+                  importHistory={efficiencyImportHistory}
                   onImport={handleEfficiencyImport}
                   onDownloadTemplate={downloadEfficiencyTemplate}
                   onClear={clearEfficiencyData}
@@ -3894,7 +3896,7 @@ function App() {
                 <div className="space-y-3">
                   {allImportHistory.length ? (
                     allImportHistory.map((record) => (
-                      <div key={record.id} className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3 md:grid-cols-[120px_1fr_180px_120px] md:items-center">
+                      <div key={record.id} className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 px-4 py-3 md:grid-cols-[120px_minmax(0,1fr)_180px_120px] md:items-center">
                         <span
                           className={`w-fit rounded-full px-3 py-1 text-xs font-medium ${
                             record.dataType === 'quality'
@@ -3904,7 +3906,14 @@ function App() {
                         >
                           {record.dataType === 'quality' ? '质量数据' : '人效数据'}
                         </span>
-                        <span className="break-all text-sm font-medium text-slate-800">{record.sourceName}</span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-800" title={record.sourceName}>
+                            {record.sourceName}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {record.dataType === 'quality' ? 'Quality import' : 'Efficiency import'}
+                          </p>
+                        </div>
                         <span className="text-sm text-slate-500">{formatDateTime(record.importedAt)}</span>
                         <span className="text-sm text-slate-500">
                           {record.rowCount ? `${formatInteger(record.rowCount)} 行` : '历史记录'}
@@ -4444,6 +4453,7 @@ function ImportDatasetCard({
   sourceName,
   importedAt,
   rowCount,
+  importHistory,
   onImport,
   onDownloadTemplate,
   onClear,
@@ -4459,6 +4469,7 @@ function ImportDatasetCard({
   sourceName: string;
   importedAt: string;
   rowCount: number;
+  importHistory: ImportRecord[];
   onImport: (event: ChangeEvent<HTMLInputElement>) => void;
   onDownloadTemplate: () => void;
   onClear: () => void;
@@ -4467,6 +4478,11 @@ function ImportDatasetCard({
     tone === 'blue'
       ? 'bg-blue-700 text-white hover:bg-blue-800'
       : 'bg-slate-900 text-white hover:bg-slate-800';
+  const latestImport = [...importHistory].sort((a, b) => b.importedAt.localeCompare(a.importedAt))[0];
+  const latestSourceName = latestImport?.sourceName || sourceName.split(' + ').at(-1) || sourceName;
+  const latestImportedAt = latestImport?.importedAt || importedAt;
+  const latestRowCount = latestImport?.rowCount || 0;
+  const totalImportedRows = importHistory.reduce((sum, record) => sum + (record.rowCount || 0), 0);
 
   return (
     <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
@@ -4484,12 +4500,29 @@ function ImportDatasetCard({
         </div>
       </div>
 
-      <div className="mt-5 grid gap-3 text-xs text-slate-500">
-        <ToolbarChip icon={<FileSpreadsheet size={14} />} label={sourceName} wide />
-        <div className="flex flex-wrap gap-2">
-          <ToolbarChip icon={<CalendarDays size={14} />} label={formatDateTime(importedAt)} />
-          <ToolbarChip icon={<Database size={14} />} label={`${formatInteger(rowCount)} 条记录`} />
+      <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-2xl bg-white p-2 text-slate-500 shadow-sm">
+            <FileSpreadsheet size={16} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">Latest file</p>
+            <p className="mt-1 truncate text-sm font-semibold text-slate-800" title={latestSourceName}>
+              {latestSourceName}
+            </p>
+          </div>
         </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <MiniImportMetric label="导入批次" value={`${formatInteger(importHistory.length)} 次`} />
+          <MiniImportMetric label="最新时间" value={formatDateTime(latestImportedAt)} />
+          <MiniImportMetric label="当前记录" value={`${formatInteger(rowCount)} 条`} />
+        </div>
+        {latestRowCount ? (
+          <p className="mt-3 text-xs text-slate-400">
+            最近解析 {formatInteger(latestRowCount)} 行
+            {totalImportedRows ? ` · 累计解析 ${formatInteger(totalImportedRows)} 行` : ''}
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -5134,6 +5167,17 @@ function DateRangeFilter({
           />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function MiniImportMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl bg-white px-3 py-2 shadow-sm">
+      <p className="text-[11px] font-medium text-slate-400">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-slate-800" title={value}>
+        {value}
+      </p>
     </div>
   );
 }
