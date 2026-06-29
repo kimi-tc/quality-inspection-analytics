@@ -33,6 +33,9 @@ const thresholds = {
   auditorRejectRate: Number(process.env.ALERT_AUDITOR_REJECT_RATE || 0.3),
   employeeEfficiencyDropRate: Number(process.env.ALERT_EMPLOYEE_EFFICIENCY_DROP_RATE || 0.2),
   employeePrecisionMovePp: Number(process.env.ALERT_EMPLOYEE_PRECISION_MOVE_PP || 0.08),
+  employeeVolumeMinWeighted: Number(process.env.ALERT_EMPLOYEE_VOLUME_MIN_WEIGHTED || 50),
+  employeeVolumeBaselineIncreaseRate: Number(process.env.ALERT_EMPLOYEE_VOLUME_BASELINE_INCREASE_RATE || 0.35),
+  employeeVolumePeerRatio: Number(process.env.ALERT_EMPLOYEE_VOLUME_PEER_RATIO || 1.5),
 };
 
 const readJson = (filePath, fallback) => {
@@ -257,6 +260,19 @@ const averageEfficiencyByEmployee = (rows, dates) => {
     });
   }
   return result;
+};
+
+const median = (values) => {
+  const sorted = values
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+
+  if (!sorted.length) return 0;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
 const alert = (level, type, title, detail, payload = {}) => ({
@@ -604,11 +620,70 @@ const main = async () => {
   const previousEfficiencyDates = efficiencyDates.filter((date) => date < efficiencyDate).slice(-7);
   const efficiencyBaseline = averageEfficiencyByEmployee(efficiencyRows, previousEfficiencyDates);
   const targetEfficiency = averageEfficiencyByEmployee(efficiencyRows.filter((row) => row.date === efficiencyDate), [efficiencyDate]);
+  const currentEfficiencyByTeam = new Map();
+  for (const current of targetEfficiency.values()) {
+    if (!isConfiguredTeam(current.team)) continue;
+    if (!currentEfficiencyByTeam.has(current.team)) currentEfficiencyByTeam.set(current.team, []);
+    currentEfficiencyByTeam.get(current.team).push(current);
+  }
 
   for (const [employee, current] of targetEfficiency.entries()) {
     if (!isConfiguredTeam(current.team)) continue;
 
     const baseline = efficiencyBaseline.get(employee);
+    const currentWeighted = current.averageWeightedHandledCount;
+    const teamPeers = currentEfficiencyByTeam.get(current.team) || [];
+    const peerMedian = median(
+      teamPeers
+        .filter((item) => item.employee !== employee)
+        .map((item) => item.averageWeightedHandledCount),
+    );
+
+    const volumeIncreaseRate = baseline?.averageWeightedHandledCount
+      ? (currentWeighted - baseline.averageWeightedHandledCount) / baseline.averageWeightedHandledCount
+      : 0;
+    const peerRatio = peerMedian ? currentWeighted / peerMedian : 0;
+    const volumeAboveBaseline = Boolean(
+      baseline
+        && baseline.days >= 2
+        && baseline.averageWeightedHandledCount > 0
+        && currentWeighted >= thresholds.employeeVolumeMinWeighted
+        && volumeIncreaseRate >= thresholds.employeeVolumeBaselineIncreaseRate,
+    );
+    const volumeAbovePeers = Boolean(
+      peerMedian > 0
+        && teamPeers.length >= 3
+        && currentWeighted >= thresholds.employeeVolumeMinWeighted
+        && peerRatio >= thresholds.employeeVolumePeerRatio,
+    );
+
+    if (volumeAboveBaseline || volumeAbovePeers) {
+      const details = [];
+      if (volumeAboveBaseline) {
+        details.push(`较本人近 ${baseline.days} 日均值 ${formatInt(baseline.averageWeightedHandledCount)} 提升 ${formatPct(volumeIncreaseRate)}`);
+      }
+      if (volumeAbovePeers) {
+        details.push(`为同团队当日中位数 ${formatInt(peerMedian)} 的 ${peerRatio.toFixed(1)} 倍`);
+      }
+
+      alerts.push(alert(
+        volumeAboveBaseline && volumeAbovePeers ? 'high' : 'medium',
+        'auditor_high_volume',
+        `审核人完成量异常偏高：${employee}`,
+        `${current.team}｜当日加权审核量 ${formatInt(currentWeighted)}，${details.join('；')}`,
+        {
+          object: employee,
+          team: current.team,
+          currentVolume: currentWeighted,
+          baselineVolume: baseline?.averageWeightedHandledCount || 0,
+          peerMedian,
+          volumeIncreaseRate,
+          peerRatio,
+          declarations: currentWeighted,
+        },
+      ));
+    }
+
     if (!baseline || baseline.days < 2 || baseline.averageWeightedHandledCount <= 0) continue;
 
     const efficiencyMove = (current.averageWeightedHandledCount - baseline.averageWeightedHandledCount) / baseline.averageWeightedHandledCount;
