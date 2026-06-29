@@ -4345,6 +4345,7 @@ function App() {
                       setModelAnalysis(null);
                     }}
                     compact
+                    tone="light"
                   />
                   <WeekQuickSelect
                     label="AI 周区间"
@@ -4361,6 +4362,7 @@ function App() {
                       setModelAnalysis(null);
                     }}
                     compact
+                    tone="light"
                   />
                 </div>
               </section>
@@ -5069,6 +5071,7 @@ function WeekQuickSelect({
   onChange,
   onClear,
   compact = false,
+  tone = 'dark',
 }: {
   label: string;
   value: string;
@@ -5076,10 +5079,13 @@ function WeekQuickSelect({
   onChange: (week: WeekOption) => void;
   onClear: () => void;
   compact?: boolean;
+  tone?: 'dark' | 'light';
 }) {
+  const isLight = tone === 'light';
+
   return (
     <label className="block">
-      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400`}>
+      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
         <CalendarDays size={compact ? 14 : 16} />
         {label}
       </span>
@@ -5097,8 +5103,10 @@ function WeekQuickSelect({
             onChange(selectedWeek);
           }
         }}
-        className={`dashboard-select w-full border border-white/10 bg-white/8 text-sm text-white outline-none transition focus:border-white/40 ${
-          compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-4 py-2.5'
+        className={`dashboard-select w-full text-sm outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-4 py-2.5'} ${
+          isLight
+            ? 'border border-slate-200 bg-white text-slate-900 focus:border-sky-300 focus:ring-4 focus:ring-sky-100'
+            : 'border border-white/10 bg-white/8 text-white focus:border-white/40'
         }`}
       >
         <option value={ALL_OPTION}>
@@ -5191,6 +5199,7 @@ function DateRangeFilter({
   onEndChange,
   onClear,
   compact = false,
+  tone = 'dark',
 }: {
   label?: string;
   startValue: string;
@@ -5200,8 +5209,10 @@ function DateRangeFilter({
   onEndChange: (value: string) => void;
   onClear: () => void;
   compact?: boolean;
+  tone?: 'dark' | 'light';
 }) {
   const hasValue = startValue !== ALL_OPTION || endValue !== ALL_OPTION;
+  const isLight = tone === 'light';
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [draftRange, setDraftRange] = useState<DateRange | undefined>(undefined);
@@ -5285,7 +5296,7 @@ function DateRangeFilter({
 
   return (
     <div className={`relative ${compact ? '' : 'md:col-span-2 xl:col-span-2'}`} ref={containerRef}>
-      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400`}>
+      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
         <CalendarDays size={compact ? 14 : 16} />
         {label}
       </span>
@@ -5304,16 +5315,18 @@ function DateRangeFilter({
           }
         }}
         className={`flex w-full items-center text-left outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-5 py-3'} ${
-          compact
-            ? 'border border-white/10 bg-white/[0.08] text-white shadow-inner shadow-white/[0.03] hover:border-white/30'
-            : 'border border-[#4B8DFF] bg-white text-slate-800 shadow-[0_8px_24px_rgba(37,99,235,0.12)] hover:border-[#2f7cff]'
+          isLight
+            ? 'border border-slate-200 bg-white text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.05)] hover:border-sky-300 focus:border-sky-300 focus:ring-4 focus:ring-sky-100'
+            : compact
+              ? 'border border-white/10 bg-white/[0.08] text-white shadow-inner shadow-white/[0.03] hover:border-white/30'
+              : 'border border-[#4B8DFF] bg-white text-slate-800 shadow-[0_8px_24px_rgba(37,99,235,0.12)] hover:border-[#2f7cff]'
         }`}
       >
-        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
           {formatDateDisplay(startValue) || '开始日期'}
         </span>
         <span className={`${compact ? 'mx-2' : 'mx-4'} shrink-0 text-slate-400`}>→</span>
-        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${compact ? 'text-white' : 'text-slate-800'}`}>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
           {formatDateDisplay(endValue) || '结束日期'}
         </span>
         <button
@@ -5323,7 +5336,11 @@ function DateRangeFilter({
             onClear();
           }}
           className={`${compact ? 'ml-2 h-6 w-6' : 'ml-3 h-7 w-7'} flex items-center justify-center rounded-full transition ${
-            compact
+            isLight
+              ? hasValue
+                ? 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+                : 'bg-slate-100 text-slate-300'
+              : compact
               ? hasValue
                 ? 'bg-white/20 text-white hover:bg-white/30'
                 : 'bg-white/10 text-slate-400'
