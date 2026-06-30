@@ -25,12 +25,18 @@ const thresholds = {
   attributeMinDeclarations: Number(process.env.ALERT_ATTRIBUTE_MIN_DECLARATIONS || 20),
   attributeRejectRate: Number(process.env.ALERT_ATTRIBUTE_REJECT_RATE || 0.3),
   attributeAmbiguousRate: Number(process.env.ALERT_ATTRIBUTE_AMBIGUOUS_RATE || 0.15),
+  attributeAmbiguousAboveAveragePp: Number(process.env.ALERT_ATTRIBUTE_AMBIGUOUS_ABOVE_AVERAGE_PP || 0.05),
+  attributePrecisionBelowAveragePp: Number(process.env.ALERT_ATTRIBUTE_PRECISION_BELOW_AVERAGE_PP || 0.08),
   attributePrecisionVolatilityPp: Number(process.env.ALERT_ATTRIBUTE_PRECISION_VOLATILITY_PP || 0.12),
   teamPrecisionDropPp: Number(process.env.ALERT_TEAM_PRECISION_DROP_PP || 0.05),
   auditorMinDeclarations: Number(process.env.ALERT_AUDITOR_MIN_DECLARATIONS || 20),
   auditorPrecisionDropPp: Number(process.env.ALERT_AUDITOR_PRECISION_DROP_PP || 0.08),
+  auditorPrecisionBelowTeamPp: Number(process.env.ALERT_AUDITOR_PRECISION_BELOW_TEAM_PP || 0.05),
+  auditorPrecisionAboveTeamPp: Number(process.env.ALERT_AUDITOR_PRECISION_ABOVE_TEAM_PP || 0.05),
   auditorAmbiguousRate: Number(process.env.ALERT_AUDITOR_AMBIGUOUS_RATE || 0.15),
+  auditorAmbiguousAboveAveragePp: Number(process.env.ALERT_AUDITOR_AMBIGUOUS_ABOVE_AVERAGE_PP || 0.05),
   auditorRejectRate: Number(process.env.ALERT_AUDITOR_REJECT_RATE || 0.3),
+  auditorRejectAboveAveragePp: Number(process.env.ALERT_AUDITOR_REJECT_ABOVE_AVERAGE_PP || 0.08),
   employeeEfficiencyDropRate: Number(process.env.ALERT_EMPLOYEE_EFFICIENCY_DROP_RATE || 0.2),
   employeePrecisionMovePp: Number(process.env.ALERT_EMPLOYEE_PRECISION_MOVE_PP || 0.08),
   employeeVolumeMinWeighted: Number(process.env.ALERT_EMPLOYEE_VOLUME_MIN_WEIGHTED || 50),
@@ -288,8 +294,73 @@ const levelRank = { high: 3, medium: 2, low: 1, info: 0 };
 const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts, dataSource }) => {
   const highAlerts = alerts.filter((item) => item.level === 'high');
   const mediumAlerts = alerts.filter((item) => item.level === 'medium');
-  const levelLabel = (level) => (level === 'high' ? '高' : level === 'medium' ? '中' : '低');
+  const levelLabel = (level) => (level === 'high' ? '高' : level === 'medium' ? '中' : level === 'info' ? '观察' : '低');
   const formatAlertLine = (item, index) => `${index + 1}. 【${levelLabel(item.level)}】${item.title}：${item.detail}`;
+  const objectName = (item) => item.object || item.title.split('：').at(-1) || item.title;
+  const issueName = (item) =>
+    item.title.includes('：') ? item.title.split('：')[0] : item.title;
+  const removeLeadingTeam = (detail, team) => {
+    const normalizedTeam = String(team ?? '').trim();
+    const text = String(detail ?? '');
+    return normalizedTeam && text.startsWith(`${normalizedTeam}｜`)
+      ? text.slice(normalizedTeam.length + 1)
+      : text;
+  };
+  const formatSection = (section, sectionAlerts) => {
+    if (!['二、场次/团队预警', '三、属性项预警', '四、审核人预警', '五、人效异动'].includes(section.title)) {
+      return sectionAlerts.map(formatAlertLine);
+    }
+
+    return sectionAlerts.flatMap((item, index) => {
+      const cleanIssue = issueName(item)
+        .replace('属性项', '')
+        .replace('审核人', '')
+        .replace('人员', '')
+        .trim();
+      const object = objectName(item);
+      const teamSuffix = section.title === '四、审核人预警' && item.team ? `｜${item.team}` : '';
+      const detail = section.title === '四、审核人预警'
+        ? removeLeadingTeam(item.detail, item.team)
+        : item.detail;
+
+      return [
+        `${index + 1}. 【${levelLabel(item.level)}】${object}${teamSuffix}｜${cleanIssue}`,
+        `   ${detail}`,
+      ];
+    });
+  };
+  const pickSectionAlerts = (section) => {
+    const sectionAlerts = alerts.filter(section.matcher);
+    if (section.title === '三、属性项预警') {
+      const precisionAlerts = sectionAlerts
+        .filter((item) => item.type === 'attribute_low_precision' || item.type === 'attribute_precision_volatility')
+        .slice(0, 2);
+      const rejectAlerts = sectionAlerts.filter((item) => item.type === 'attribute_high_reject').slice(0, 3);
+      const ambiguousAlerts = sectionAlerts.filter((item) => item.type === 'attribute_high_ambiguous').slice(0, 2);
+      const otherAlerts = sectionAlerts
+        .filter((item) => ![
+          'attribute_low_precision',
+          'attribute_precision_volatility',
+          'attribute_high_reject',
+          'attribute_high_ambiguous',
+        ].includes(item.type))
+        .slice(0, Math.max(0, section.limit - precisionAlerts.length - rejectAlerts.length - ambiguousAlerts.length));
+
+      return [...precisionAlerts, ...rejectAlerts, ...ambiguousAlerts, ...otherAlerts].slice(0, section.limit);
+    }
+
+    if (section.title !== '四、审核人预警') {
+      return sectionAlerts.slice(0, section.limit);
+    }
+
+    const positiveAlerts = sectionAlerts.filter((item) => item.type === 'auditor_high_precision').slice(0, 2);
+    const rejectAlerts = sectionAlerts.filter((item) => item.type === 'auditor_high_reject').slice(0, 1);
+    const otherAlerts = sectionAlerts
+      .filter((item) => item.type !== 'auditor_high_reject' && item.type !== 'auditor_high_precision')
+      .slice(0, Math.max(0, section.limit - rejectAlerts.length - positiveAlerts.length));
+
+    return [...otherAlerts, ...positiveAlerts, ...rejectAlerts].slice(0, section.limit);
+  };
   const alertSections = [
     {
       title: '一、整体预警',
@@ -304,12 +375,12 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
     {
       title: '三、属性项预警',
       matcher: (item) => item.type.startsWith('attribute_'),
-      limit: 6,
+      limit: 7,
     },
     {
       title: '四、审核人预警',
       matcher: (item) => item.type.startsWith('auditor_'),
-      limit: 5,
+      limit: 6,
     },
     {
       title: '五、人效异动',
@@ -335,19 +406,17 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
     lines.push('今日未触发核心预警，建议保持常规抽检。');
   } else {
     for (const section of alertSections) {
-      const sectionAlerts = alerts.filter(section.matcher).slice(0, section.limit);
+      const sectionAlerts = pickSectionAlerts(section);
       if (!sectionAlerts.length) continue;
 
       lines.push('');
       lines.push(section.title);
-      sectionAlerts.forEach((item, index) => {
-        lines.push(formatAlertLine(item, index));
-      });
+      lines.push(...formatSection(section, sectionAlerts));
     }
   }
 
   lines.push('');
-  lines.push('建议动作：优先抽看高拒绝/高模糊属性项样本，再按场次和团队确认是否集中在某个审核口径。');
+  lines.push('建议动作：优先抽看低精准通过率、高拒绝率和模棱两可率高于均值的样本，再按场次、团队和审核人确认是否集中在某个审核口径。');
   return lines.join('\n');
 };
 
@@ -498,23 +567,50 @@ const main = async () => {
     .filter((row) => row.declarations >= thresholds.attributeMinDeclarations);
 
   for (const row of attributeRows) {
+    const precisionBelowAverage = total.preciseRate - row.preciseRate;
+    if (precisionBelowAverage >= thresholds.attributePrecisionBelowAveragePp) {
+      alerts.push(alert(
+        'medium',
+        'attribute_low_precision',
+        `属性项精准通过率低：${row.key}`,
+        `精准通过率 ${formatPct(row.preciseRate)}，低于当日均值 ${formatPp(-precisionBelowAverage)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        {
+          object: row.key,
+          currentRate: row.preciseRate,
+          averageRate: total.preciseRate,
+          rejectRate: row.rejectRate,
+          movement: -precisionBelowAverage,
+          declarations: row.declarations,
+        },
+      ));
+    }
+
     if (row.rejectRate >= thresholds.attributeRejectRate) {
       alerts.push(alert(
         'high',
         'attribute_high_reject',
         `属性项拒绝率高：${row.key}`,
-        `拒绝率 ${formatPct(row.rejectRate)}，申报 ${formatInt(row.declarations)} 次`,
-        { object: row.key, currentRate: row.rejectRate, declarations: row.declarations },
+        `拒绝率 ${formatPct(row.rejectRate)}｜精准通过率 ${formatPct(row.preciseRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        { object: row.key, currentRate: row.rejectRate, preciseRate: row.preciseRate, declarations: row.declarations },
       ));
     }
 
-    if (row.ambiguousRate >= thresholds.attributeAmbiguousRate) {
+    const ambiguousAboveAverage = row.ambiguousRate - total.ambiguousRate;
+    if (ambiguousAboveAverage >= thresholds.attributeAmbiguousAboveAveragePp) {
       alerts.push(alert(
-        row.ambiguousRate >= thresholds.attributeAmbiguousRate * 1.5 ? 'high' : 'medium',
+        row.ambiguousRate >= thresholds.attributeAmbiguousRate ? 'medium' : 'low',
         'attribute_high_ambiguous',
-        `属性项模棱两可率高：${row.key}`,
-        `模棱两可率 ${formatPct(row.ambiguousRate)}，申报 ${formatInt(row.declarations)} 次`,
-        { object: row.key, currentRate: row.ambiguousRate, declarations: row.declarations },
+        `属性项模棱两可率高于均值：${row.key}`,
+        `模棱两可率 ${formatPct(row.ambiguousRate)}，高于当日均值 ${formatPp(ambiguousAboveAverage)}｜精准通过率 ${formatPct(row.preciseRate)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        {
+          object: row.key,
+          currentRate: row.ambiguousRate,
+          averageRate: total.ambiguousRate,
+          preciseRate: row.preciseRate,
+          rejectRate: row.rejectRate,
+          movement: ambiguousAboveAverage,
+          declarations: row.declarations,
+        },
       ));
     }
   }
@@ -529,13 +625,14 @@ const main = async () => {
         'medium',
         'attribute_precision_volatility',
         `属性项精准通过率波动：${row.key}`,
-        `当前 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，变化 ${formatPp(movement)}`,
-        { object: row.key, currentRate: row.preciseRate, previousRate: previous.preciseRate, movement, declarations: row.declarations },
+        `当前 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，变化 ${formatPp(movement)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        { object: row.key, currentRate: row.preciseRate, previousRate: previous.preciseRate, rejectRate: row.rejectRate, movement, declarations: row.declarations },
       ));
     }
   }
 
   const teamRows = groupBy(targetRows, (row) => row.auditorTeam);
+  const currentTeamMap = new Map(teamRows.map((row) => [row.key, row]));
   for (const row of teamRows) {
     if (!isConfiguredTeam(row.key)) continue;
 
@@ -563,6 +660,8 @@ const main = async () => {
   );
 
   for (const row of currentAuditorRows) {
+    const currentTeam = currentTeamMap.get(row.team);
+    const teamPrecisionGap = currentTeam ? row.preciseRate - currentTeam.preciseRate : 0;
     const previous = previousAuditorMap.get(row.key);
     if (previous) {
       const drop = previous.preciseRate - row.preciseRate;
@@ -571,7 +670,7 @@ const main = async () => {
           'medium',
           'auditor_precision_drop',
           `审核人精准通过率下降：${row.auditor}`,
-          `${row.team}｜当前 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，下降 ${formatPp(-drop)}，申报 ${formatInt(row.declarations)} 次`,
+          `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，下降 ${formatPp(-drop)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
           {
             object: row.auditor,
             team: row.team,
@@ -584,31 +683,84 @@ const main = async () => {
       }
     }
 
-    if (row.ambiguousRate >= thresholds.auditorAmbiguousRate) {
+    if (
+      currentTeam
+      && isConfiguredTeam(row.team)
+      && currentTeam.declarations >= thresholds.attributeMinDeclarations
+      && -teamPrecisionGap >= thresholds.auditorPrecisionBelowTeamPp
+    ) {
       alerts.push(alert(
-        row.ambiguousRate >= thresholds.auditorAmbiguousRate * 1.5 ? 'high' : 'medium',
-        'auditor_high_ambiguous',
-        `审核人模棱两可率高：${row.auditor}`,
-        `${row.team}｜模棱两可率 ${formatPct(row.ambiguousRate)}，申报 ${formatInt(row.declarations)} 次`,
+        'medium',
+        'auditor_low_precision',
+        `审核人精准通过率低于团队均值：${row.auditor}`,
+        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，低于 ${formatPp(teamPrecisionGap)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
         {
           object: row.auditor,
           team: row.team,
-          currentRate: row.ambiguousRate,
+          currentRate: row.preciseRate,
+          teamRate: currentTeam.preciseRate,
+          movement: teamPrecisionGap,
           declarations: row.declarations,
         },
       ));
     }
 
-    if (row.rejectRate >= thresholds.auditorRejectRate) {
+    if (
+      currentTeam
+      && isConfiguredTeam(row.team)
+      && currentTeam.declarations >= thresholds.attributeMinDeclarations
+      && teamPrecisionGap >= thresholds.auditorPrecisionAboveTeamPp
+    ) {
+      alerts.push(alert(
+        'info',
+        'auditor_high_precision',
+        `审核人精准通过率高于团队均值：${row.auditor}`,
+        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，高出 ${formatPp(teamPrecisionGap)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        {
+          object: row.auditor,
+          team: row.team,
+          currentRate: row.preciseRate,
+          teamRate: currentTeam.preciseRate,
+          movement: teamPrecisionGap,
+          declarations: row.declarations,
+        },
+      ));
+    }
+
+    const ambiguousAboveAverage = row.ambiguousRate - total.ambiguousRate;
+    if (ambiguousAboveAverage >= thresholds.auditorAmbiguousAboveAveragePp) {
+      alerts.push(alert(
+        row.ambiguousRate >= thresholds.auditorAmbiguousRate ? 'medium' : 'low',
+        'auditor_high_ambiguous',
+        `审核人模棱两可率高于均值：${row.auditor}`,
+        `${row.team}｜模棱两可率 ${formatPct(row.ambiguousRate)}，高于当日均值 ${formatPp(ambiguousAboveAverage)}｜精准通过率 ${formatPct(row.preciseRate)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        {
+          object: row.auditor,
+          team: row.team,
+          currentRate: row.ambiguousRate,
+          averageRate: total.ambiguousRate,
+          preciseRate: row.preciseRate,
+          rejectRate: row.rejectRate,
+          movement: ambiguousAboveAverage,
+          declarations: row.declarations,
+        },
+      ));
+    }
+
+    const rejectAboveAverage = row.rejectRate - total.rejectRate;
+    if (row.rejectRate >= thresholds.auditorRejectRate && rejectAboveAverage >= thresholds.auditorRejectAboveAveragePp) {
       alerts.push(alert(
         'medium',
         'auditor_high_reject',
         `审核人拒绝率高：${row.auditor}`,
-        `${row.team}｜拒绝率 ${formatPct(row.rejectRate)}，申报 ${formatInt(row.declarations)} 次`,
+        `${row.team}｜拒绝率 ${formatPct(row.rejectRate)}，高于当日均值 ${formatPp(rejectAboveAverage)}｜精准通过率 ${formatPct(row.preciseRate)}｜申报 ${formatInt(row.declarations)} 次`,
         {
           object: row.auditor,
           team: row.team,
           currentRate: row.rejectRate,
+          preciseRate: row.preciseRate,
+          averageRate: total.rejectRate,
+          movement: rejectAboveAverage,
           declarations: row.declarations,
         },
       ));
