@@ -332,10 +332,13 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
   const pickSectionAlerts = (section) => {
     const sectionAlerts = alerts.filter(section.matcher);
     if (section.title === '三、属性项预警') {
-      const precisionAlerts = sectionAlerts
-        .filter((item) => item.type === 'attribute_low_precision' || item.type === 'attribute_precision_volatility')
-        .slice(0, 2);
-      const rejectAlerts = sectionAlerts.filter((item) => item.type === 'attribute_high_reject').slice(0, 3);
+      const lowPrecisionAlerts = sectionAlerts
+        .filter((item) => item.type === 'attribute_low_precision')
+        .slice(0, 3);
+      const volatilePrecisionAlerts = sectionAlerts
+        .filter((item) => item.type === 'attribute_precision_volatility')
+        .slice(0, 1);
+      const rejectAlerts = sectionAlerts.filter((item) => item.type === 'attribute_high_reject').slice(0, 1);
       const ambiguousAlerts = sectionAlerts.filter((item) => item.type === 'attribute_high_ambiguous').slice(0, 2);
       const otherAlerts = sectionAlerts
         .filter((item) => ![
@@ -344,9 +347,9 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
           'attribute_high_reject',
           'attribute_high_ambiguous',
         ].includes(item.type))
-        .slice(0, Math.max(0, section.limit - precisionAlerts.length - rejectAlerts.length - ambiguousAlerts.length));
+        .slice(0, Math.max(0, section.limit - lowPrecisionAlerts.length - volatilePrecisionAlerts.length - rejectAlerts.length - ambiguousAlerts.length));
 
-      return [...precisionAlerts, ...rejectAlerts, ...ambiguousAlerts, ...otherAlerts].slice(0, section.limit);
+      return [...lowPrecisionAlerts, ...volatilePrecisionAlerts, ...ambiguousAlerts, ...rejectAlerts, ...otherAlerts].slice(0, section.limit);
     }
 
     if (section.title !== '四、审核人预警') {
@@ -422,7 +425,8 @@ const buildMessage = ({ targetDate, baselineDates, total, previousTotal, alerts,
 
 const buildFeishuPayload = (text) => {
   const isFlowWebhook = feishuWebhookUrl.includes('/flow/api/trigger-webhook/');
-  if (isFlowWebhook) {
+  const isBaseWorkflowWebhook = feishuWebhookUrl.includes('/base/workflow/webhook/event/');
+  if (isFlowWebhook || isBaseWorkflowWebhook) {
     return {
       text,
       title: `预质检每日预警`,
@@ -573,7 +577,7 @@ const main = async () => {
         'medium',
         'attribute_low_precision',
         `属性项精准通过率低：${row.key}`,
-        `精准通过率 ${formatPct(row.preciseRate)}，低于当日均值 ${formatPp(-precisionBelowAverage)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        `精准通过率 ${formatPct(row.preciseRate)}，低于当日均值 ${formatPp(-precisionBelowAverage)}｜申报 ${formatInt(row.declarations)} 次`,
         {
           object: row.key,
           currentRate: row.preciseRate,
@@ -625,7 +629,7 @@ const main = async () => {
         'medium',
         'attribute_precision_volatility',
         `属性项精准通过率波动：${row.key}`,
-        `当前 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，变化 ${formatPp(movement)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        `当前 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，变化 ${formatPp(movement)}｜申报 ${formatInt(row.declarations)} 次`,
         { object: row.key, currentRate: row.preciseRate, previousRate: previous.preciseRate, rejectRate: row.rejectRate, movement, declarations: row.declarations },
       ));
     }
@@ -670,7 +674,7 @@ const main = async () => {
           'medium',
           'auditor_precision_drop',
           `审核人精准通过率下降：${row.auditor}`,
-          `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，下降 ${formatPp(-drop)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+          `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，上一有数日 ${formatPct(previous.preciseRate)}，下降 ${formatPp(-drop)}｜申报 ${formatInt(row.declarations)} 次`,
           {
             object: row.auditor,
             team: row.team,
@@ -693,7 +697,7 @@ const main = async () => {
         'medium',
         'auditor_low_precision',
         `审核人精准通过率低于团队均值：${row.auditor}`,
-        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，低于 ${formatPp(teamPrecisionGap)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，低于 ${formatPp(teamPrecisionGap)}｜申报 ${formatInt(row.declarations)} 次`,
         {
           object: row.auditor,
           team: row.team,
@@ -715,7 +719,7 @@ const main = async () => {
         'info',
         'auditor_high_precision',
         `审核人精准通过率高于团队均值：${row.auditor}`,
-        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，高出 ${formatPp(teamPrecisionGap)}｜拒绝率 ${formatPct(row.rejectRate)}｜申报 ${formatInt(row.declarations)} 次`,
+        `${row.team}｜精准通过率 ${formatPct(row.preciseRate)}，团队均值 ${formatPct(currentTeam.preciseRate)}，高出 ${formatPp(teamPrecisionGap)}｜申报 ${formatInt(row.declarations)} 次`,
         {
           object: row.auditor,
           team: row.team,

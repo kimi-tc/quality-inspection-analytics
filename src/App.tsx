@@ -743,6 +743,39 @@ const aggregateAttributes = (rows: ImportedRow[]) =>
     .sort((a, b) => b.declarations - a.declarations)
     .slice(0, 10);
 
+const aggregateAmbiguousAttributes = (rows: ImportedRow[]) => {
+  const totalAmbiguousPasses = rows.reduce((sum, row) => sum + row.ambiguousPasses, 0);
+
+  return Object.values(
+    rows.reduce<
+      Record<
+        string,
+        {
+          attribute: string;
+          declarations: number;
+          ambiguousPasses: number;
+        }
+      >
+    >((acc, row) => {
+      if (!acc[row.attribute]) {
+        acc[row.attribute] = { attribute: row.attribute, declarations: 0, ambiguousPasses: 0 };
+      }
+
+      acc[row.attribute].declarations += row.declarations;
+      acc[row.attribute].ambiguousPasses += row.ambiguousPasses;
+      return acc;
+    }, {}),
+  )
+    .map((item) => ({
+      ...item,
+      ambiguousRate: item.declarations ? item.ambiguousPasses / item.declarations : 0,
+      contribution: totalAmbiguousPasses ? item.ambiguousPasses / totalAmbiguousPasses : 0,
+    }))
+    .filter((item) => item.ambiguousPasses > 0)
+    .sort((a, b) => b.ambiguousPasses - a.ambiguousPasses)
+    .slice(0, 10);
+};
+
 const aggregateCategories = (rows: ImportedRow[], propertyCategoryDictionary: PropertyCategoryEntry[]) =>
   Object.values(
     rows.reduce<
@@ -2326,6 +2359,7 @@ function App() {
   const metrics = useMemo(() => aggregateMetrics(filteredRows), [filteredRows]);
   const trendData = useMemo(() => aggregateTrend(filteredRows), [filteredRows]);
   const topAttributes = useMemo(() => aggregateAttributes(filteredRows), [filteredRows]);
+  const ambiguousAttributeRanking = useMemo(() => aggregateAmbiguousAttributes(filteredRows), [filteredRows]);
   const categoryData = useMemo(
     () => aggregateCategories(filteredRows, propertyCategoryDictionary),
     [filteredRows, propertyCategoryDictionary],
@@ -3698,23 +3732,64 @@ function App() {
                 />
               </section>
 
-              <section className="mt-8 grid gap-8 xl:grid-cols-2">
+              <section className="mt-8 grid gap-8 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,0.9fr)]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6">
                     <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Attribute Ranking</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">高频属性项参考</h2>
-                    <p className="mt-2 text-sm text-slate-500">如果还没锁定要分析的属性项，可以先看当前筛选下申报次数靠前的属性项。</p>
+                    <h2 className="mt-2 font-display text-2xl text-slate-900">属性项排名参考</h2>
+                    <p className="mt-2 text-sm text-slate-500">左侧看申报高频属性，右侧看模棱两可勾选贡献，减少页面纵向占用。</p>
                   </div>
-                  <div className="h-[320px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={topAttributes} layout="vertical" margin={{ top: 0, right: 10, left: 10, bottom: 0 }}>
-                        <CartesianGrid horizontal={false} stroke="#eef2f7" />
-                        <XAxis type="number" hide />
-                        <YAxis type="category" dataKey="attribute" width={96} tickLine={false} axisLine={false} fontSize={12} />
-                        <Tooltip />
-                        <Bar dataKey="declarations" radius={[0, 10, 10, 0]} fill="#1d4ed8" name="申报次数" />
-                      </BarChart>
-                    </ResponsiveContainer>
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <div>
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-sm font-semibold text-slate-700">高频属性项</span>
+                        <span className="text-xs text-slate-400">申报次数</span>
+                      </div>
+                      <div className="space-y-2">
+                        {topAttributes.slice(0, 6).map((item, index) => {
+                          const maxDeclarations = topAttributes[0]?.declarations || 1;
+                          return (
+                            <div key={item.attribute} className="rounded-2xl bg-slate-50 px-3 py-2.5">
+                              <div className="flex items-center justify-between gap-3 text-sm">
+                                <span className="min-w-0 truncate font-medium text-slate-700">{index + 1}. {item.attribute}</span>
+                                <span className="shrink-0 font-semibold text-slate-900">{formatInteger(item.declarations)}</span>
+                              </div>
+                              <div className="mt-2 h-1.5 rounded-full bg-white">
+                                <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${Math.min(100, (item.declarations / maxDeclarations) * 100)}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-sm font-semibold text-slate-700">模棱两可勾选</span>
+                        <span className="text-xs text-slate-400">次数 / 贡献</span>
+                      </div>
+                      {ambiguousAttributeRanking.length ? (
+                        <div className="space-y-2">
+                          {ambiguousAttributeRanking.slice(0, 6).map((item, index) => (
+                            <div key={item.attribute} className="rounded-2xl bg-cyan-50/70 px-3 py-2.5">
+                              <div className="flex items-center justify-between gap-3 text-sm">
+                                <span className="min-w-0 truncate font-medium text-slate-700">{index + 1}. {item.attribute}</span>
+                                <span className="shrink-0 font-semibold text-slate-900">
+                                  {formatInteger(item.ambiguousPasses)} · {formatPercent(item.contribution)}
+                                </span>
+                              </div>
+                              <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                                <span>模棱两可率 {formatPercent(item.ambiguousRate)}</span>
+                                <span>申报 {formatInteger(item.declarations)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-12 text-center text-sm text-slate-500">
+                          当前暂无模棱两可勾选记录。
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
