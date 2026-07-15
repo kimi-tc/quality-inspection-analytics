@@ -1,7 +1,7 @@
 import React, { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { DayPicker, type DateRange } from 'react-day-picker';
-import { addDays, addMonths, format, parseISO, startOfMonth, startOfWeek, subMonths } from 'date-fns';
+import { addDays, addMonths, endOfMonth, format, parseISO, startOfMonth, startOfWeek, subMonths } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import {
   ResponsiveContainer,
@@ -117,6 +117,7 @@ const AMBIGUOUS_RATE_TARGET = 0.07;
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
 type CompareQualityMetric = 'proofAccuracy' | 'exactPassRate' | 'ambiguousRate' | 'rejectRate';
 type CompareDimension = 'session' | 'attribute' | 'batch' | 'auditor' | 'auditorTeam';
+type TimeReportType = 'year' | 'month' | 'day' | 'custom';
 const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
 const CATEGORY_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 const SESSION_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#6366f1', '#f43f5e', '#64748b', '#84cc16', '#a855f7'];
@@ -564,6 +565,37 @@ const createDateOptions = (rows: Array<{ date: string }>) =>
     [...new Set(rows.map((row) => row.date).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
   );
 
+const getDateParts = (date: string) => {
+  const [year = '', month = '', day = ''] = date.split('-');
+  return { year, month, day };
+};
+
+const getYearOptionsFromDates = (dates: string[]) =>
+  [...new Set(dates.filter((date) => date !== ALL_OPTION).map((date) => getDateParts(date).year))]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+
+const getMonthOptionsFromDates = (dates: string[], year: string) =>
+  [...new Set(
+    dates
+      .filter((date) => date !== ALL_OPTION && getDateParts(date).year === year)
+      .map((date) => getDateParts(date).month),
+  )]
+    .filter(Boolean)
+    .sort((a, b) => Number(a) - Number(b));
+
+const getDayOptionsFromDates = (dates: string[], year: string, month: string) =>
+  [...new Set(
+    dates
+      .filter((date) => {
+        const parts = getDateParts(date);
+        return date !== ALL_OPTION && parts.year === year && parts.month === month;
+      })
+      .map((date) => getDateParts(date).day),
+  )]
+    .filter(Boolean)
+    .sort((a, b) => Number(a) - Number(b));
+
 const createStringOptions = <T,>(rows: T[], pickValue: (row: T) => string) =>
   [ALL_OPTION].concat(
     [...new Set(rows.map((row) => pickValue(row).trim()).filter(Boolean))].sort((a, b) =>
@@ -730,16 +762,45 @@ const aggregateTrend = (rows: ImportedRow[]) =>
 
 const aggregateAttributes = (rows: ImportedRow[]) =>
   Object.values(
-    rows.reduce<Record<string, { attribute: string; declarations: number; rejects: number }>>((acc, row) => {
+    rows.reduce<
+      Record<
+        string,
+        {
+          attribute: string;
+          declarations: number;
+          exactPasses: number;
+          ambiguousPasses: number;
+          rejects: number;
+          proofRejects: number;
+        }
+      >
+    >((acc, row) => {
       if (!acc[row.attribute]) {
-        acc[row.attribute] = { attribute: row.attribute, declarations: 0, rejects: 0 };
+        acc[row.attribute] = {
+          attribute: row.attribute,
+          declarations: 0,
+          exactPasses: 0,
+          ambiguousPasses: 0,
+          rejects: 0,
+          proofRejects: 0,
+        };
       }
 
       acc[row.attribute].declarations += row.declarations;
+      acc[row.attribute].exactPasses += resolveExactPasses(row);
+      acc[row.attribute].ambiguousPasses += row.ambiguousPasses;
       acc[row.attribute].rejects += row.rejects;
+      acc[row.attribute].proofRejects += row.proofRejects;
       return acc;
     }, {}),
   )
+    .map((item) => ({
+      ...item,
+      proofAccuracy: item.declarations
+        ? (item.declarations - item.ambiguousPasses - item.proofRejects) / item.declarations
+        : 0,
+      exactPassRate: item.declarations ? item.exactPasses / item.declarations : 0,
+    }))
     .sort((a, b) => b.declarations - a.declarations)
     .slice(0, 10);
 
@@ -2134,6 +2195,10 @@ function App() {
   const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [overviewStartDateFilter, setOverviewStartDateFilter] = useState(ALL_OPTION);
   const [overviewEndDateFilter, setOverviewEndDateFilter] = useState(ALL_OPTION);
+  const [overviewTimeType, setOverviewTimeType] = useState<TimeReportType>('custom');
+  const [overviewYearValue, setOverviewYearValue] = useState('');
+  const [overviewMonthValue, setOverviewMonthValue] = useState('');
+  const [overviewDayValue, setOverviewDayValue] = useState('');
   const [overviewSessionFilter, setOverviewSessionFilter] = useState<string[]>([]);
   const [overviewBatchFilter, setOverviewBatchFilter] = useState<string[]>([]);
   const [attributeStartDateFilter, setAttributeStartDateFilter] = useState(ALL_OPTION);
@@ -2260,6 +2325,20 @@ function App() {
     [auditorTeamDictionary, dataset.rows],
   );
   const weekOptions = useMemo(() => createWeekOptions(options.dates), [options.dates]);
+  const overviewYearOptions = useMemo(() => getYearOptionsFromDates(options.dates), [options.dates]);
+  const overviewMonthOptions = useMemo(
+    () => getMonthOptionsFromDates(options.dates, overviewYearValue || overviewYearOptions.at(-1) || ''),
+    [options.dates, overviewYearOptions, overviewYearValue],
+  );
+  const overviewDayOptions = useMemo(
+    () =>
+      getDayOptionsFromDates(
+        options.dates,
+        overviewYearValue || overviewYearOptions.at(-1) || '',
+        overviewMonthValue || overviewMonthOptions.at(-1) || '',
+      ),
+    [options.dates, overviewMonthOptions, overviewMonthValue, overviewYearOptions, overviewYearValue],
+  );
   const efficiencyDateOptions = useMemo(() => createDateOptions(efficiencyDataset.rows), [efficiencyDataset.rows]);
   const efficiencyWeekOptions = useMemo(
     () => createWeekOptions(efficiencyDateOptions),
@@ -2279,6 +2358,15 @@ function App() {
     () => [qualityCoverage.end, efficiencyCoverage.end].filter(Boolean).sort((a, b) => b.localeCompare(a))[0] ?? '',
     [efficiencyCoverage.end, qualityCoverage.end],
   );
+  useEffect(() => {
+    const latestDate = options.dates.filter((date) => date !== ALL_OPTION).at(-1);
+    if (!latestDate || overviewYearValue) return;
+
+    const parts = getDateParts(latestDate);
+    setOverviewYearValue(parts.year);
+    setOverviewMonthValue(parts.month);
+    setOverviewDayValue(parts.day);
+  }, [options.dates, overviewYearValue]);
   const overallCoverage = useMemo(
     () => getDateCoverage([...dataset.rows, ...efficiencyDataset.rows]),
     [dataset.rows, efficiencyDataset.rows],
@@ -2379,6 +2467,19 @@ function App() {
     [aiFilteredEfficiencyRows],
   );
   const sessionShareData = useMemo(() => aggregateSessionShares(filteredRows), [filteredRows]);
+  const overviewEfficiencyTopRows = useMemo(
+    () =>
+      aggregateEfficiencyRanking(
+        filterEfficiencyRows(
+          efficiencyDataset.rows,
+          overviewStartDateFilter,
+          overviewEndDateFilter,
+          ALL_OPTION,
+          overviewSessionFilter,
+        ),
+      ),
+    [efficiencyDataset.rows, overviewEndDateFilter, overviewSessionFilter, overviewStartDateFilter],
+  );
   const compareSessionOptions = useMemo(
     () => aggregateSessionShares(dataset.rows).map((item) => item.name),
     [dataset.rows],
@@ -2613,6 +2714,66 @@ function App() {
       return [...current, metric];
     });
   };
+  const applyOverviewTimeRange = (type: TimeReportType, year: string, month: string, day: string) => {
+    if (!year || type === 'custom') return;
+
+    if (type === 'year') {
+      setOverviewStartDateFilter(`${year}-01-01`);
+      setOverviewEndDateFilter(`${year}-12-31`);
+      return;
+    }
+
+    if (!month) return;
+    if (type === 'month') {
+      const start = `${year}-${month}-01`;
+      setOverviewStartDateFilter(start);
+      setOverviewEndDateFilter(format(endOfMonth(parseISO(start)), 'yyyy-MM-dd'));
+      return;
+    }
+
+    if (!day) return;
+    const date = `${year}-${month}-${day}`;
+    setOverviewStartDateFilter(date);
+    setOverviewEndDateFilter(date);
+  };
+  const handleOverviewTimeTypeChange = (nextType: TimeReportType) => {
+    setOverviewTimeType(nextType);
+
+    if (nextType === 'custom') {
+      return;
+    }
+
+    const selectedDate = overviewStartDateFilter !== ALL_OPTION ? overviewStartDateFilter : '';
+    const latestDate = options.dates.filter((date) => date !== ALL_OPTION).at(-1);
+    const seedDate = selectedDate || latestDate || '';
+    const latestParts = seedDate ? getDateParts(seedDate) : { year: overviewYearValue, month: overviewMonthValue, day: overviewDayValue };
+    const nextYear = overviewYearValue || latestParts.year;
+    const nextMonth = overviewMonthValue || latestParts.month;
+    const nextDay = overviewDayValue || latestParts.day;
+
+    setOverviewYearValue(nextYear);
+    setOverviewMonthValue(nextMonth);
+    setOverviewDayValue(nextDay);
+    applyOverviewTimeRange(nextType, nextYear, nextMonth, nextDay);
+  };
+  const handleOverviewYearChange = (nextYear: string) => {
+    const nextMonth = getMonthOptionsFromDates(options.dates, nextYear).at(-1) || '';
+    const nextDay = getDayOptionsFromDates(options.dates, nextYear, nextMonth).at(-1) || '';
+    setOverviewYearValue(nextYear);
+    setOverviewMonthValue(nextMonth);
+    setOverviewDayValue(nextDay);
+    applyOverviewTimeRange(overviewTimeType, nextYear, nextMonth, nextDay);
+  };
+  const handleOverviewMonthChange = (nextMonth: string) => {
+    const nextDay = getDayOptionsFromDates(options.dates, overviewYearValue, nextMonth).at(-1) || '';
+    setOverviewMonthValue(nextMonth);
+    setOverviewDayValue(nextDay);
+    applyOverviewTimeRange(overviewTimeType, overviewYearValue, nextMonth, nextDay);
+  };
+  const handleOverviewDayChange = (nextDay: string) => {
+    setOverviewDayValue(nextDay);
+    applyOverviewTimeRange(overviewTimeType, overviewYearValue, overviewMonthValue, nextDay);
+  };
 
   const cards: MetricsCardData[] = [
     {
@@ -2625,14 +2786,14 @@ function App() {
     {
       title: '举证准确率',
       value: formatPercent(metrics.proofAccuracy),
-      hint: '按你的定义实时重算',
+      hint: `有效举证 ${formatInteger(metrics.declarations - metrics.ambiguousPasses - metrics.proofRejects)}`,
       tone: 'emerald',
       icon: <ShieldCheck size={18} />,
     },
     {
       title: '精准通过率',
       value: formatPercent(metrics.exactPassRate),
-      hint: '排除模糊通过与未通过',
+      hint: `精准通过 ${formatInteger(metrics.exactPasses)}`,
       tone: 'blue',
       icon: <Target size={18} />,
     },
@@ -2972,136 +3133,83 @@ function App() {
     }
   };
 
+  const navItems = [
+    { key: 'overview' as const, icon: <House size={17} />, label: '首页' },
+    { key: 'compare' as const, icon: <GitCompareArrows size={17} />, label: '对比分析' },
+    { key: 'attribute' as const, icon: <Tags size={17} />, label: '属性项分析' },
+    { key: 'efficiency' as const, icon: <Users size={17} />, label: '人效分析' },
+    { key: 'ai' as const, icon: <BrainCircuit size={17} />, label: 'AI 分析' },
+    { key: 'import' as const, icon: <ClipboardList size={17} />, label: '数据导入' },
+    { key: 'dictionary' as const, icon: <Tags size={17} />, label: '分类字典' },
+  ];
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f6efe4_0%,_#f3f8f6_40%,_#eef2ff_100%)] text-slate-900">
-      <div className="mx-auto flex max-w-[1600px] gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <aside className="hidden w-[240px] shrink-0 lg:block">
-          <div className="sticky top-6 rounded-[34px] bg-[linear-gradient(180deg,_#0d1424_0%,_#121a2d_100%)] p-5 text-white shadow-[0_24px_64px_rgba(15,23,42,0.24)]">
-            <div className="mb-8 flex items-center gap-3">
-              <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-[linear-gradient(135deg,_#2ad8ff_0%,_#1493ff_100%)] text-slate-950">
-                <Layers3 size={24} />
+      <div className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 lg:px-8">
+        <header className="sticky top-3 z-50 mb-5 rounded-[24px] border border-white/70 bg-white/88 px-4 py-3 shadow-[0_14px_42px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white">
+                  <Layers3 size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="truncate font-display text-xl font-semibold text-slate-950">预质检质量看板</h1>
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                      {isLoading ? '加载中' : '每周复用'}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 hidden truncate text-xs text-slate-500 md:block">
+                    聚焦举证准确率、精准通过率、模棱两可率与拒绝率
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="font-display text-xl font-semibold">PQA</p>
-                <p className="text-xs tracking-[0.22em] text-slate-400">Dashboard</p>
+              <div className="hidden items-center gap-2 lg:flex">
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">最新数据</p>
+                  <p className="mt-0.5 font-display text-sm font-semibold text-slate-950">{latestDataDate || '暂无数据'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">可查询区间</p>
+                  <p className="mt-0.5 text-sm font-semibold text-slate-800">
+                    {overallCoverage.start && overallCoverage.end
+                      ? `${overallCoverage.start} ~ ${overallCoverage.end}`
+                      : '暂无可查询数据'}
+                  </p>
+                </div>
               </div>
             </div>
-
-            <div className="space-y-3">
-              <SidebarNavItem
-                icon={<House size={20} />}
-                label="首页"
-                active={activeView === 'overview'}
-                onClick={() => setActiveView('overview')}
-              />
-              <SidebarNavItem
-                icon={<GitCompareArrows size={20} />}
-                label="对比分析"
-                active={activeView === 'compare'}
-                onClick={() => setActiveView('compare')}
-              />
-              <SidebarNavItem
-                icon={<Tags size={20} />}
-                label="属性项分析"
-                active={activeView === 'attribute'}
-                onClick={() => setActiveView('attribute')}
-              />
-              <SidebarNavItem
-                icon={<Users size={20} />}
-                label="人效分析"
-                active={activeView === 'efficiency'}
-                onClick={() => setActiveView('efficiency')}
-              />
-              <SidebarNavItem
-                icon={<BrainCircuit size={20} />}
-                label="AI 分析"
-                active={activeView === 'ai'}
-                onClick={() => setActiveView('ai')}
-              />
-              <SidebarNavItem
-                icon={<ClipboardList size={20} />}
-                label="数据导入"
-                active={activeView === 'import'}
-                onClick={() => setActiveView('import')}
-              />
-              <SidebarNavItem
-                icon={<Tags size={20} />}
-                label="分类字典"
-                active={activeView === 'dictionary'}
-                onClick={() => setActiveView('dictionary')}
-              />
-            </div>
+            <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 xl:justify-end xl:pb-0">
+              {navItems.map((item) => (
+                <TopNavItem
+                  key={item.key}
+                  icon={item.icon}
+                  label={item.label}
+                  active={activeView === item.key}
+                  onClick={() => setActiveView(item.key)}
+                />
+              ))}
+            </nav>
           </div>
-        </aside>
+        </header>
 
-        <div className="min-w-0 flex-1">
-          <div className="mb-4 flex gap-3 lg:hidden">
-            <MobileNavChip label="首页" active={activeView === 'overview'} onClick={() => setActiveView('overview')} />
-            <MobileNavChip label="对比分析" active={activeView === 'compare'} onClick={() => setActiveView('compare')} />
-            <MobileNavChip label="属性项分析" active={activeView === 'attribute'} onClick={() => setActiveView('attribute')} />
-            <MobileNavChip label="人效分析" active={activeView === 'efficiency'} onClick={() => setActiveView('efficiency')} />
-            <MobileNavChip label="AI 分析" active={activeView === 'ai'} onClick={() => setActiveView('ai')} />
-            <MobileNavChip label="数据导入" active={activeView === 'import'} onClick={() => setActiveView('import')} />
-            <MobileNavChip label="分类字典" active={activeView === 'dictionary'} onClick={() => setActiveView('dictionary')} />
-          </div>
+        <div className="min-w-0">
 
           <motion.section
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             className="overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur"
           >
-          <div className={isOverviewView ? 'p-5 lg:p-6' : 'p-3 lg:p-4'}>
-            <div className={`${isOverviewView ? 'rounded-[28px] p-4' : 'rounded-[22px] p-3'} border border-slate-200 bg-white/90 shadow-[0_12px_35px_rgba(15,23,42,0.04)]`}>
-              <div className={`${isOverviewView ? 'gap-4' : 'gap-3'} flex flex-col xl:flex-row xl:items-center xl:justify-between`}>
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className={`${isOverviewView ? 'h-12 w-12 rounded-2xl' : 'h-10 w-10 rounded-xl'} flex shrink-0 items-center justify-center bg-slate-900 text-white`}>
-                    <Layers3 size={isOverviewView ? 22 : 18} />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <h1 className={`${isOverviewView ? 'text-2xl' : 'text-xl'} font-display font-semibold text-slate-900`}>预质检质量看板</h1>
-                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-                        {isLoading ? '加载中' : '每周复用'}
-                      </span>
-                    </div>
-                    <p className={`${isOverviewView ? 'block' : 'hidden xl:block'} mt-1 text-sm text-slate-500`}>
-                      聚焦举证准确率、精准通过率、模棱两可率与拒绝率，按场次、批次、属性项动态拆解。
-                    </p>
-                  </div>
-                </div>
-                <div className={`grid gap-2 sm:grid-cols-2 ${isOverviewView ? 'xl:min-w-[420px]' : 'xl:min-w-[360px]'}`}>
-                  <div className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-emerald-100 bg-emerald-50/80`}>
-                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
-                      <CalendarDays size={14} />
-                      最新数据
-                    </div>
-                    <p className={`${isOverviewView ? 'text-xl' : 'text-base'} mt-1 font-display font-semibold text-slate-950`}>
-                      {latestDataDate || '暂无数据'}
-                    </p>
-                  </div>
-                  <div className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-slate-200 bg-slate-50/90`}>
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">可查询区间</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-800">
-                      {overallCoverage.start && overallCoverage.end
-                        ? `${overallCoverage.start} ~ ${overallCoverage.end}`
-                        : '暂无可查询数据'}
-                    </p>
-                    <p className={`${isOverviewView ? 'block' : 'hidden'} mt-1 text-xs text-slate-500`}>
-                      质量 {qualityCoverage.end || '-'} / 人效 {efficiencyCoverage.end || '-'}
-                    </p>
-                  </div>
-                </div>
+          <div className={isOverviewView ? 'p-3 lg:p-4' : 'p-3 lg:p-4'}>
+            {error ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {error}
               </div>
+            ) : null}
 
-              {error ? (
-                <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {error}
-                </div>
-              ) : null}
-            </div>
-
-            <div className={`${isOverviewView ? 'mt-4 rounded-[28px] p-4' : 'mt-3 rounded-[22px] p-3'} bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] text-white`}>
-              <div className={`${isOverviewView ? 'gap-4' : 'gap-3'} flex flex-col`}>
+            <div className={`${error ? (isOverviewView ? 'mt-3' : 'mt-3') : ''} ${isOverviewView ? 'rounded-[24px] p-3' : 'rounded-[22px] p-3'} bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] text-white`}>
+              <div className="flex flex-col gap-3">
                 {activeView === 'compare' ? (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)] xl:items-end">
                     <DateRangeFilter
@@ -3263,29 +3371,26 @@ function App() {
                     />
                   </div>
                 ) : (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(2,minmax(150px,1fr))] xl:items-end">
-                    <DateRangeFilter
-                      label="日期区间"
+                  <div className="grid gap-3 xl:grid-cols-[minmax(520px,1.45fr)_minmax(210px,0.65fr)_minmax(210px,0.65fr)] xl:items-end">
+                    <TimeTypeFilter
+                      type={overviewTimeType}
+                      year={overviewYearValue}
+                      month={overviewMonthValue}
+                      day={overviewDayValue}
+                      yearOptions={overviewYearOptions}
+                      monthOptions={overviewMonthOptions}
+                      dayOptions={overviewDayOptions}
                       startValue={overviewStartDateFilter}
                       endValue={overviewEndDateFilter}
-                      options={options.dates}
+                      dateOptions={options.dates}
+                      onTypeChange={handleOverviewTimeTypeChange}
+                      onYearChange={handleOverviewYearChange}
+                      onMonthChange={handleOverviewMonthChange}
+                      onDayChange={handleOverviewDayChange}
                       onStartChange={setOverviewStartDateFilter}
                       onEndChange={setOverviewEndDateFilter}
                       onClear={() => {
-                        setOverviewStartDateFilter(ALL_OPTION);
-                        setOverviewEndDateFilter(ALL_OPTION);
-                      }}
-                      compact
-                    />
-                    <WeekQuickSelect
-                      label="周区间"
-                      value={getWeekValue(overviewStartDateFilter, overviewEndDateFilter, weekOptions)}
-                      options={weekOptions}
-                      onChange={(week) => {
-                        setOverviewStartDateFilter(week.start);
-                        setOverviewEndDateFilter(week.end);
-                      }}
-                      onClear={() => {
+                        setOverviewTimeType('custom');
                         setOverviewStartDateFilter(ALL_OPTION);
                         setOverviewEndDateFilter(ALL_OPTION);
                       }}
@@ -3360,7 +3465,7 @@ function App() {
                     ) : null}
                   </div>
                 ) : null}
-                <details className={`${isOverviewView ? 'rounded-2xl px-4 py-3' : 'rounded-xl px-3 py-2'} border border-white/10 bg-white/5 text-sm text-slate-200`}>
+                <details className={`${isOverviewView ? 'rounded-xl px-3 py-2' : 'rounded-xl px-3 py-2'} border border-white/10 bg-white/5 text-sm text-slate-200`}>
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium marker:content-none">
                     当前口径
                     <ChevronDown size={16} className="shrink-0" />
@@ -3382,25 +3487,8 @@ function App() {
 
           {activeView === 'overview' ? (
             <>
-              <section className="mt-8">
-                <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
-                  <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_14px_35px_rgba(15,23,42,0.04)]">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm text-slate-500">申报次数</p>
-                        <p className="mt-3 font-display text-4xl text-slate-900">{formatInteger(metrics.declarations)}</p>
-                      </div>
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                        <Database size={20} />
-                      </div>
-                    </div>
-                    <p className="mt-4 text-sm text-slate-500">{filteredRows.length.toLocaleString('zh-CN')} 条聚合记录</p>
-                  </div>
-                </motion.div>
-              </section>
-
-              <section className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                {cards.slice(1).map((card, index) => (
+              <section className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-5">
+                {cards.map((card, index) => (
                   <motion.div
                     key={card.title}
                     initial={{ opacity: 0, y: 14 }}
@@ -3412,117 +3500,47 @@ function App() {
                 ))}
               </section>
 
-              <section className="mt-8">
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Trend</p>
-                      <h2 className="mt-2 font-display text-2xl text-slate-900">举证准确率与精准通过率趋势</h2>
-                    </div>
-                    <div className="rounded-full bg-slate-100 px-4 py-2 text-sm text-slate-600">
-                      {dataset.rows.length ? `共 ${trendData.length} 天` : '等待导入'}
-                    </div>
-                  </div>
-
-                  <div className="h-[320px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={trendData}>
-                        <defs>
-                          <linearGradient id="proofAccuracyFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#0f766e" stopOpacity={0.24} />
-                            <stop offset="95%" stopColor="#0f766e" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                        <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
-                        <YAxis tickLine={false} axisLine={false} fontSize={12} domain={[0, 1]} tickFormatter={(value) => `${Math.round(value * 100)}%`} />
-                        <Tooltip content={<RateTrendTooltip />} />
-                        <Area
-                          type="monotone"
-                          dataKey="proofAccuracy"
-                          stroke="#0f766e"
-                          fill="url(#proofAccuracyFill)"
-                          strokeWidth={2.5}
-                          name="举证准确率"
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="exactPassRate"
-                          stroke="#1d4ed8"
-                          fill="transparent"
-                          strokeWidth={2.5}
-                          name="精准通过率"
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </section>
-
-              <section className="mt-8 grid gap-6 xl:grid-cols-2">
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-                  <div className="mb-6">
-                    <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Category Mix</p>
-                    <h2 className="mt-2 font-display text-2xl text-slate-900">属性项分类分布</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-500">按当前首页筛选范围内的申报次数计算，同时展示分类质量表现。</p>
-                  </div>
-                  <div className="grid gap-4 lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)] lg:items-center">
-                    <div className="h-[220px] min-w-0">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                          <Pie
-                            data={categoryData}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={46}
-                            outerRadius={82}
-                            paddingAngle={2}
-                          >
-                            {categoryData.map((item, index) => (
-                              <Cell
-                                key={item.name}
-                                fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]}
-                              />
-                            ))}
-                          </Pie>
-                          <Tooltip formatter={(value: number) => formatPercent(value)} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="space-y-2">
-                      {categoryData.map((item, index) => (
-                        <div key={item.name} className="rounded-2xl bg-slate-50 px-3 py-2.5">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span
-                                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                                style={{
-                                  backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
-                                }}
-                              />
-                              <span className="truncate text-sm font-medium text-slate-700">{item.name}</span>
-                            </div>
-                            <span className="shrink-0 font-display text-sm font-semibold text-slate-900">
-                              {formatPercent(item.value)}
-                            </span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-500">
-                            <span>举证 {formatPercent(item.proofAccuracy)}</span>
-                            <span>通过 {formatPercent(item.exactPassRate)}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <SessionShareCard
-                  data={sessionShareData}
-                  title="场次占比分布"
-                  subtitle="按当前首页筛选范围内的申报次数计算，各场次占比合计为 100%。"
-                  compact
-                  metricsOnly
+              <section className="mt-8 grid items-stretch gap-5 xl:grid-cols-3">
+                <OverviewTopRankingCard
+                  eyebrow="ATTRIBUTE TOP"
+                  title="属性项申报TOP排名"
+                  tone="teal"
+                  emptyText="当前筛选范围内暂无属性项数据。"
+                  rows={topAttributes.slice(0, 5).map((item) => ({
+                    name: item.attribute,
+                    value: formatInteger(item.declarations),
+                    valueLabel: '申报',
+                    proofAccuracy: item.proofAccuracy,
+                    exactPassRate: item.exactPassRate,
+                  }))}
+                />
+                <OverviewTopRankingCard
+                  eyebrow="AUDITOR TOP"
+                  title="人员审核效率TOP排名"
+                  tone="indigo"
+                  emptyText="当前筛选范围内暂无人效数据。"
+                  rows={overviewEfficiencyTopRows.slice(0, 5).map((item) => ({
+                    name: item.employee,
+                    meta: item.team || '未配置团队',
+                    value: formatInteger(item.weightedHandledCount),
+                    valueLabel: '加权量',
+                    proofAccuracy: item.proofAccuracy,
+                    exactPassRate: item.precisionPassRate,
+                  }))}
+                />
+                <OverviewTopRankingCard
+                  eyebrow="SESSION TOP"
+                  title="场次TOP排名"
+                  tone="amber"
+                  emptyText="当前筛选范围内暂无场次数据。"
+                  rows={sessionShareData.slice(0, 5).map((item) => ({
+                    name: item.name,
+                    meta: `占比 ${formatPercent(item.value)}`,
+                    value: formatInteger(item.declarations),
+                    valueLabel: '申报',
+                    proofAccuracy: item.proofAccuracy,
+                    exactPassRate: item.exactPassRate,
+                  }))}
                 />
               </section>
             </>
@@ -3691,7 +3709,7 @@ function App() {
                 </motion.div>
               </section>
 
-              <section className="mt-8">
+              <section className="mt-8 grid gap-8 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,0.9fr)]">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
                   <div className="mb-6 flex items-center justify-between">
                     <div>
@@ -3720,9 +3738,7 @@ function App() {
                     </ResponsiveContainer>
                   </div>
                 </div>
-              </section>
 
-              <section className="mt-8">
                 <SessionShareCard
                   data={sessionShareData}
                   title="场次占比分布"
@@ -4739,7 +4755,7 @@ function App() {
   );
 }
 
-function SidebarNavItem({
+function TopNavItem({
   icon,
   label,
   active,
@@ -4754,36 +4770,14 @@ function SidebarNavItem({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-2xl px-4 py-4 text-left transition ${
+      className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition ${
         active
-          ? 'bg-[linear-gradient(90deg,_rgba(0,216,255,0.22)_0%,_rgba(0,216,255,0.08)_100%)] text-cyan-300 shadow-[inset_4px_0_0_#22d3ee]'
-          : 'text-slate-400 hover:bg-white/5 hover:text-white'
+          ? 'border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)]'
+          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900'
       }`}
     >
-      <span>{icon}</span>
-      <span className="text-lg font-medium">{label}</span>
-    </button>
-  );
-}
-
-function MobileNavChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-        active ? 'bg-slate-900 text-white' : 'bg-white text-slate-600'
-      }`}
-    >
-      {label}
+      <span className={active ? 'text-cyan-300' : 'text-slate-400'}>{icon}</span>
+      <span>{label}</span>
     </button>
   );
 }
@@ -4932,6 +4926,121 @@ function AiInsightColumn({
   );
 }
 
+function OverviewTopRankingCard({
+  eyebrow,
+  title,
+  tone,
+  rows,
+  emptyText,
+}: {
+  eyebrow: string;
+  title: string;
+  tone: 'teal' | 'indigo' | 'amber';
+  emptyText: string;
+  rows: Array<{
+    name: string;
+    meta?: string;
+    value: string;
+    valueLabel: string;
+    proofAccuracy: number;
+    exactPassRate: number;
+  }>;
+}) {
+  const theme =
+    tone === 'teal'
+      ? {
+          card: 'border-teal-100 bg-[linear-gradient(180deg,_#f0fdfa_0%,_#ffffff_34%)]',
+          eyebrow: 'text-teal-600',
+          rankTop: 'bg-teal-700 text-white',
+          rankSecond: 'bg-teal-100 text-teal-700',
+          rankThird: 'bg-emerald-100 text-emerald-700',
+          row: 'bg-teal-50/65',
+          metric: 'bg-white/85',
+          accent: 'bg-teal-500',
+        }
+      : tone === 'indigo'
+        ? {
+            card: 'border-indigo-100 bg-[linear-gradient(180deg,_#eef2ff_0%,_#ffffff_34%)]',
+            eyebrow: 'text-indigo-500',
+            rankTop: 'bg-indigo-700 text-white',
+            rankSecond: 'bg-indigo-100 text-indigo-700',
+            rankThird: 'bg-sky-100 text-sky-700',
+            row: 'bg-indigo-50/65',
+            metric: 'bg-white/85',
+            accent: 'bg-indigo-500',
+          }
+        : {
+            card: 'border-amber-100 bg-[linear-gradient(180deg,_#fff7ed_0%,_#ffffff_34%)]',
+            eyebrow: 'text-amber-600',
+            rankTop: 'bg-amber-600 text-white',
+            rankSecond: 'bg-orange-100 text-orange-700',
+            rankThird: 'bg-yellow-100 text-yellow-700',
+            row: 'bg-amber-50/65',
+            metric: 'bg-white/85',
+            accent: 'bg-amber-500',
+          };
+
+  return (
+    <div className={`flex h-full min-h-[360px] flex-col rounded-[26px] border p-5 shadow-[0_18px_45px_rgba(15,23,42,0.05)] ${theme.card}`}>
+      <div className="mb-4">
+        <div className="flex items-center gap-2">
+          <span className={`h-2 w-2 rounded-full ${theme.accent}`} />
+          <p className={`text-xs font-semibold uppercase tracking-[0.24em] ${theme.eyebrow}`}>{eyebrow}</p>
+        </div>
+        <h2 className="mt-2 font-display text-xl font-semibold text-slate-950">{title}</h2>
+      </div>
+
+      {rows.length ? (
+        <div className="flex flex-1 flex-col gap-2.5">
+          {rows.map((item, index) => (
+            <div key={`${item.name}-${index}`} className={`rounded-2xl px-3.5 py-3 ${theme.row}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <span
+                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      index === 0
+                        ? theme.rankTop
+                        : index === 1
+                          ? theme.rankSecond
+                          : index === 2
+                            ? theme.rankThird
+                            : 'bg-white text-slate-500'
+                    }`}
+                  >
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-800">{item.name}</p>
+                    {item.meta ? <p className="mt-0.5 truncate text-xs text-slate-400">{item.meta}</p> : null}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="font-display text-base font-semibold text-slate-950">{item.value}</p>
+                  <p className="text-[11px] text-slate-400">{item.valueLabel}</p>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className={`rounded-xl px-2.5 py-2 ${theme.metric}`}>
+                  <p className="text-slate-400">举证准确率</p>
+                  <p className="mt-0.5 font-semibold text-slate-800">{formatPercent(item.proofAccuracy)}</p>
+                </div>
+                <div className={`rounded-xl px-2.5 py-2 ${theme.metric}`}>
+                  <p className="text-slate-400">精准通过率</p>
+                  <p className="mt-0.5 font-semibold text-slate-800">{formatPercent(item.exactPassRate)}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+          {emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SessionShareCard({
   data,
   title,
@@ -4950,12 +5059,12 @@ function SessionShareCard({
   const visibleData = metricsOnly ? data.filter((item) => item.value > 0.01) : data;
 
   return (
-    <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]">
-      <div className={`${compact ? 'mb-4' : 'mb-6'} flex flex-wrap items-start justify-between gap-4`}>
+    <div className={`${metricsOnly ? 'flex h-full min-h-[430px] flex-col' : ''} rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.05)]`}>
+      <div className={`${metricsOnly ? 'mb-4 min-h-[96px]' : compact ? 'mb-4' : 'mb-6'} flex flex-wrap items-start justify-between gap-4`}>
         <div>
           <p className="text-sm uppercase tracking-[0.26em] text-slate-400">Session Mix</p>
           <h2 className="mt-2 font-display text-2xl text-slate-900">{title}</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-500">{subtitle}</p>
+          {subtitle ? <p className="mt-2 text-sm leading-6 text-slate-500">{subtitle}</p> : null}
         </div>
         {!metricsOnly && <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
           <p className="text-xs uppercase tracking-[0.18em] text-slate-400">申报合计</p>
@@ -4967,7 +5076,7 @@ function SessionShareCard({
       </div>
 
       {visibleData.length ? (
-        <div className={metricsOnly ? 'grid grid-cols-2 gap-2' : `${compact ? 'grid gap-4 lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)]' : 'grid gap-6 lg:grid-cols-[minmax(260px,0.95fr)_minmax(0,1.05fr)]'} lg:items-center`}>
+        <div className={metricsOnly ? 'grid flex-1 grid-cols-2 content-start gap-2' : `${compact ? 'grid gap-4 lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)]' : 'grid gap-6 lg:grid-cols-[minmax(260px,0.95fr)_minmax(0,1.05fr)]'} lg:items-center`}>
           {!metricsOnly && <div className={`${compact ? 'h-[220px]' : 'h-[300px]'} min-w-0`}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
@@ -5245,6 +5354,121 @@ function WeekQuickSelect({
   );
 }
 
+function TimeTypeFilter({
+  type,
+  year,
+  month,
+  day,
+  yearOptions,
+  monthOptions,
+  dayOptions,
+  startValue,
+  endValue,
+  dateOptions,
+  onTypeChange,
+  onYearChange,
+  onMonthChange,
+  onDayChange,
+  onStartChange,
+  onEndChange,
+  onClear,
+}: {
+  type: TimeReportType;
+  year: string;
+  month: string;
+  day: string;
+  yearOptions: string[];
+  monthOptions: string[];
+  dayOptions: string[];
+  startValue: string;
+  endValue: string;
+  dateOptions: string[];
+  onTypeChange: (value: TimeReportType) => void;
+  onYearChange: (value: string) => void;
+  onMonthChange: (value: string) => void;
+  onDayChange: (value: string) => void;
+  onStartChange: (value: string) => void;
+  onEndChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  const controlClass = 'dashboard-select h-10 rounded-xl border border-white/10 bg-white/[0.08] px-3 text-sm font-medium text-white outline-none transition focus:border-cyan-300/60';
+  const selectWrapClass = 'flex items-center gap-2';
+
+  return (
+    <div className="min-w-0">
+      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+        <CalendarDays size={16} />
+        时间类型
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="w-[150px]">
+          <span className="sr-only">时间类型</span>
+          <select
+            value={type}
+            onChange={(event) => onTypeChange(event.target.value as TimeReportType)}
+            className={`${controlClass} w-full`}
+          >
+            <option value="year">年报</option>
+            <option value="month">月报</option>
+            <option value="day">日报</option>
+            <option value="custom">自定义（天）</option>
+          </select>
+        </label>
+
+        {type === 'custom' ? (
+        <div className="min-w-[300px] flex-1">
+          <DateRangeFilter
+            label="日期区间"
+            startValue={startValue}
+            endValue={endValue}
+            options={dateOptions}
+            onStartChange={onStartChange}
+            onEndChange={onEndChange}
+            onClear={onClear}
+            compact
+            hideLabel
+          />
+        </div>
+      ) : (
+        <>
+          <label className={selectWrapClass}>
+            <span className="sr-only">年</span>
+            <select value={year} onChange={(event) => onYearChange(event.target.value)} className={`${controlClass} w-[112px]`}>
+              {yearOptions.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+            <span className="text-sm font-semibold text-slate-200">年</span>
+          </label>
+          {type === 'month' || type === 'day' ? (
+            <label className={selectWrapClass}>
+              <span className="sr-only">月</span>
+              <select value={month} onChange={(event) => onMonthChange(event.target.value)} className={`${controlClass} w-[84px]`}>
+                {monthOptions.map((item) => (
+                  <option key={item} value={item}>{Number(item)}</option>
+                ))}
+              </select>
+              <span className="text-sm font-semibold text-slate-200">月</span>
+            </label>
+          ) : null}
+          {type === 'day' ? (
+            <label className={selectWrapClass}>
+              <span className="sr-only">日</span>
+              <select value={day} onChange={(event) => onDayChange(event.target.value)} className={`${controlClass} w-[84px]`}>
+                {dayOptions.map((item) => (
+                  <option key={item} value={item}>{Number(item)}</option>
+                ))}
+              </select>
+              <span className="text-sm font-semibold text-slate-200">日</span>
+            </label>
+          ) : null}
+        </>
+      )}
+      </div>
+    </div>
+  );
+}
+
 function ComparePeriodPanel({
   title,
   tone,
@@ -5323,6 +5547,7 @@ function DateRangeFilter({
   onClear,
   compact = false,
   tone = 'dark',
+  hideLabel = false,
 }: {
   label?: string;
   startValue: string;
@@ -5333,6 +5558,7 @@ function DateRangeFilter({
   onClear: () => void;
   compact?: boolean;
   tone?: 'dark' | 'light';
+  hideLabel?: boolean;
 }) {
   const hasValue = startValue !== ALL_OPTION || endValue !== ALL_OPTION;
   const isLight = tone === 'light';
@@ -5419,10 +5645,12 @@ function DateRangeFilter({
 
   return (
     <div className={`relative ${compact ? '' : 'md:col-span-2 xl:col-span-2'}`} ref={containerRef}>
-      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-        <CalendarDays size={compact ? 14 : 16} />
-        {label}
-      </span>
+      {hideLabel ? null : (
+        <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          <CalendarDays size={compact ? 14 : 16} />
+          {label}
+        </span>
+      )}
       <div
         role="button"
         tabIndex={0}
@@ -5437,7 +5665,7 @@ function DateRangeFilter({
             setIsOpen((value) => !value);
           }
         }}
-        className={`flex w-full items-center text-left outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-5 py-3'} ${
+        className={`flex w-full items-center text-left outline-none transition ${compact ? 'rounded-xl px-3 py-2' : 'rounded-2xl px-4 py-2.5'} ${
           isLight
             ? 'border border-slate-200 bg-white text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.05)] hover:border-sky-300 focus:border-sky-300 focus:ring-4 focus:ring-sky-100'
             : compact
@@ -5445,11 +5673,11 @@ function DateRangeFilter({
               : 'border border-[#4B8DFF] bg-white text-slate-800 shadow-[0_8px_24px_rgba(37,99,235,0.12)] hover:border-[#2f7cff]'
         }`}
       >
-        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[14px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
           {formatDateDisplay(startValue) || '开始日期'}
         </span>
-        <span className={`${compact ? 'mx-2' : 'mx-4'} shrink-0 text-slate-400`}>→</span>
-        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[15px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
+        <span className={`${compact ? 'mx-2' : 'mx-3'} shrink-0 text-slate-400`}>→</span>
+        <span className={`min-w-0 flex-1 ${compact ? 'text-sm' : 'text-[14px]'} font-medium ${isLight || !compact ? 'text-slate-800' : 'text-white'}`}>
           {formatDateDisplay(endValue) || '结束日期'}
         </span>
         <button
@@ -5478,7 +5706,8 @@ function DateRangeFilter({
       </div>
 
       {isOpen ? (
-        <div className="absolute left-0 top-[calc(100%+12px)] z-[80] w-max max-w-[calc(100vw-3rem)] overflow-visible rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
+        <div className="absolute left-0 top-[calc(100%+10px)] z-[80] w-max max-w-[calc(100vw-2rem)] overflow-visible rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_18px_48px_rgba(15,23,42,0.16)]">
+          <span className="absolute left-8 top-[-7px] h-3.5 w-3.5 rotate-45 border-l border-t border-slate-200 bg-white" />
           <DayPicker
             locale={zhCN}
             mode="range"
