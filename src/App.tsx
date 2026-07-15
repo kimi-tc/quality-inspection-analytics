@@ -117,7 +117,7 @@ const AMBIGUOUS_RATE_TARGET = 0.07;
 type ViewKey = 'overview' | 'compare' | 'attribute' | 'efficiency' | 'ai' | 'import' | 'dictionary';
 type CompareQualityMetric = 'proofAccuracy' | 'exactPassRate' | 'ambiguousRate' | 'rejectRate';
 type CompareDimension = 'session' | 'attribute' | 'batch' | 'auditor' | 'auditorTeam';
-type TimeReportType = 'year' | 'month' | 'day' | 'custom';
+type TimeReportType = 'yesterday' | 'lastWeek' | 'thisWeek' | 'year' | 'month' | 'day' | 'custom';
 const PROPERTY_CATEGORY_OPTIONS = ['维修项', '外观项', '功能项', 'SKU项', '其他', '售后补充项'] as const;
 const CATEGORY_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 const SESSION_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#6366f1', '#f43f5e', '#64748b', '#84cc16', '#a855f7'];
@@ -2373,12 +2373,12 @@ function App() {
   );
   const aiWeekOptions = useMemo(() => createWeekOptions(aiDateOptions), [aiDateOptions]);
   const aiFilteredRows = useMemo(
-    () => filterRowsByDateRange(dataset.rows, aiStartDateFilter, aiEndDateFilter),
-    [aiEndDateFilter, aiStartDateFilter, dataset.rows],
+    () => (activeView === 'ai' ? filterRowsByDateRange(dataset.rows, aiStartDateFilter, aiEndDateFilter) : []),
+    [activeView, aiEndDateFilter, aiStartDateFilter, dataset.rows],
   );
   const aiFilteredEfficiencyRows = useMemo(
-    () => filterRowsByDateRange(efficiencyDataset.rows, aiStartDateFilter, aiEndDateFilter),
-    [aiEndDateFilter, aiStartDateFilter, efficiencyDataset.rows],
+    () => (activeView === 'ai' ? filterRowsByDateRange(efficiencyDataset.rows, aiStartDateFilter, aiEndDateFilter) : []),
+    [activeView, aiEndDateFilter, aiStartDateFilter, efficiencyDataset.rows],
   );
   const aiDateCoverage = useMemo(
     () => getDateCoverage([...aiFilteredRows, ...aiFilteredEfficiencyRows]),
@@ -2387,25 +2387,30 @@ function App() {
 
   const overviewFilteredRows = useMemo(
     () =>
-      filterRowsByCriteria(dataset.rows, {
-        startDate: overviewStartDateFilter,
-        endDate: overviewEndDateFilter,
-        session: overviewSessionFilter,
-        batch: overviewBatchFilter,
-        attribute: ALL_OPTION,
-      }),
-    [dataset.rows, overviewBatchFilter, overviewEndDateFilter, overviewSessionFilter, overviewStartDateFilter],
+      activeView === 'overview'
+        ? filterRowsByCriteria(dataset.rows, {
+            startDate: overviewStartDateFilter,
+            endDate: overviewEndDateFilter,
+            session: overviewSessionFilter,
+            batch: overviewBatchFilter,
+            attribute: ALL_OPTION,
+          })
+        : [],
+    [activeView, dataset.rows, overviewBatchFilter, overviewEndDateFilter, overviewSessionFilter, overviewStartDateFilter],
   );
   const attributeFilteredRows = useMemo(
     () =>
-      filterRowsByCriteria(dataset.rows, {
-        startDate: attributeStartDateFilter,
-        endDate: attributeEndDateFilter,
-        session: attributeSessionFilter,
-        batch: attributeBatchFilter,
-        attribute: attributeFilter,
-      }),
+      activeView === 'attribute'
+        ? filterRowsByCriteria(dataset.rows, {
+            startDate: attributeStartDateFilter,
+            endDate: attributeEndDateFilter,
+            session: attributeSessionFilter,
+            batch: attributeBatchFilter,
+            attribute: attributeFilter,
+          })
+        : [],
     [
+      activeView,
       attributeBatchFilter,
       attributeEndDateFilter,
       attributeFilter,
@@ -2415,19 +2420,22 @@ function App() {
     ],
   );
   const filteredRows = useMemo(
-    () => (activeView === 'attribute' ? attributeFilteredRows : overviewFilteredRows),
+    () => (activeView === 'attribute' ? attributeFilteredRows : activeView === 'overview' ? overviewFilteredRows : []),
     [activeView, attributeFilteredRows, overviewFilteredRows],
   );
   const filteredEfficiencyRows = useMemo(
     () =>
-      filterEfficiencyRows(
-        efficiencyDataset.rows,
-        efficiencyStartDateFilter,
-        efficiencyEndDateFilter,
-        efficiencyTeamFilter,
-        efficiencySessionFilter,
-      ),
+      activeView === 'efficiency'
+        ? filterEfficiencyRows(
+            efficiencyDataset.rows,
+            efficiencyStartDateFilter,
+            efficiencyEndDateFilter,
+            efficiencyTeamFilter,
+            efficiencySessionFilter,
+          )
+        : [],
     [
+      activeView,
       efficiencyDataset.rows,
       efficiencyEndDateFilter,
       efficiencySessionFilter,
@@ -2477,8 +2485,8 @@ function App() {
     [efficiencyDataset.rows, overviewEndDateFilter, overviewSessionFilter, overviewStartDateFilter],
   );
   const compareSessionOptions = useMemo(
-    () => aggregateSessionShares(dataset.rows).map((item) => item.name),
-    [dataset.rows],
+    () => options.sessions.filter((option) => option !== ALL_OPTION),
+    [options.sessions],
   );
   const compareAttributeOptions = useMemo(
     () => options.attributes.filter((option) => option !== ALL_OPTION),
@@ -2551,17 +2559,20 @@ function App() {
   const compareB = compareBFilter || compareDimensionOptions.find((option) => option !== compareA) || compareA;
   const compareBaseRows = useMemo(
     () =>
-      filterRowsByCriteria(dataset.rows, {
-        startDate: compareStartDateFilter,
-        endDate: compareEndDateFilter,
-        session: compareDimension === 'session' ? ALL_OPTION : compareSessionFilter,
-        batch: compareDimension === 'batch' ? ALL_OPTION : compareBatchFilter,
-        attribute: compareDimension === 'attribute' ? ALL_OPTION : compareAttributeFilter,
-        auditor: compareDimension === 'auditor' ? ALL_OPTION : compareAuditorFilter,
-        auditorTeam: compareDimension === 'auditorTeam' ? ALL_OPTION : compareAuditorTeamFilter,
-        auditorTeamDictionary,
-      }),
+      activeView === 'compare'
+        ? filterRowsByCriteria(dataset.rows, {
+            startDate: compareStartDateFilter,
+            endDate: compareEndDateFilter,
+            session: compareDimension === 'session' ? ALL_OPTION : compareSessionFilter,
+            batch: compareDimension === 'batch' ? ALL_OPTION : compareBatchFilter,
+            attribute: compareDimension === 'attribute' ? ALL_OPTION : compareAttributeFilter,
+            auditor: compareDimension === 'auditor' ? ALL_OPTION : compareAuditorFilter,
+            auditorTeam: compareDimension === 'auditorTeam' ? ALL_OPTION : compareAuditorTeamFilter,
+            auditorTeamDictionary,
+          })
+        : [],
     [
+      activeView,
       compareDimension,
       compareAttributeFilter,
       compareBatchFilter,
@@ -2599,12 +2610,12 @@ function App() {
     [compareA, compareARows, compareB, compareBRows],
   );
   const attributeSessionRows = useMemo(
-    () => aggregateDimensionMetrics(filteredRows, 'session'),
-    [filteredRows],
+    () => (activeView === 'attribute' ? aggregateDimensionMetrics(filteredRows, 'session') : []),
+    [activeView, filteredRows],
   );
   const attributeBatchRows = useMemo(
-    () => aggregateDimensionMetrics(filteredRows, 'batch'),
-    [filteredRows],
+    () => (activeView === 'attribute' ? aggregateDimensionMetrics(filteredRows, 'batch') : []),
+    [activeView, filteredRows],
   );
   const efficiencyMetrics = useMemo(() => aggregateEfficiency(filteredEfficiencyRows), [filteredEfficiencyRows]);
   const efficiencyRanking = useMemo(() => aggregateEfficiencyRanking(filteredEfficiencyRows), [filteredEfficiencyRows]);
@@ -2711,6 +2722,26 @@ function App() {
     });
   };
   const applyOverviewTimeRange = (type: TimeReportType, year: string, month: string, day: string) => {
+    const availableDateValues = options.dates.filter((date) => date !== ALL_OPTION);
+    const latestDateValue = availableDateValues.at(-1) || '';
+    const latestDate = latestDateValue ? parseISO(latestDateValue) : undefined;
+
+    if (latestDate && type === 'yesterday') {
+      const yesterday = format(addDays(latestDate, -1), 'yyyy-MM-dd');
+      setOverviewStartDateFilter(yesterday);
+      setOverviewEndDateFilter(yesterday);
+      return;
+    }
+
+    if (latestDate && (type === 'thisWeek' || type === 'lastWeek')) {
+      const weekStart = startOfWeek(latestDate, { weekStartsOn: 0 });
+      const targetStart = type === 'lastWeek' ? addDays(weekStart, -7) : weekStart;
+      const targetEnd = addDays(targetStart, 6);
+      setOverviewStartDateFilter(format(targetStart, 'yyyy-MM-dd'));
+      setOverviewEndDateFilter(format(targetEnd, 'yyyy-MM-dd'));
+      return;
+    }
+
     if (!year || type === 'custom') return;
 
     if (type === 'year') {
@@ -5404,6 +5435,9 @@ function TimeTypeFilter({
             onChange={(event) => onTypeChange(event.target.value as TimeReportType)}
             className={`${controlClass} w-full`}
           >
+            <option value="yesterday">昨天</option>
+            <option value="lastWeek">上周</option>
+            <option value="thisWeek">本周</option>
             <option value="year">年报</option>
             <option value="month">月报</option>
             <option value="day">日报</option>
@@ -5411,7 +5445,7 @@ function TimeTypeFilter({
           </select>
         </label>
 
-        {type === 'custom' ? (
+        {type === 'custom' || type === 'yesterday' || type === 'lastWeek' || type === 'thisWeek' ? (
         <div className="min-w-[300px] flex-1">
           <DateRangeFilter
             label="日期区间"
@@ -5562,18 +5596,23 @@ function DateRangeFilter({
   const [isOpen, setIsOpen] = useState(false);
   const [draftRange, setDraftRange] = useState<DateRange | undefined>(undefined);
   const [visibleMonth, setVisibleMonth] = useState<Date | undefined>(undefined);
-  const availableDates = options.filter((option) => option !== ALL_OPTION);
-  const minDate = availableDates[0] ? parseISO(availableDates[0]) : undefined;
-  const maxDate = availableDates.length ? parseISO(availableDates[availableDates.length - 1]) : undefined;
-  const visibleStartMonth = minDate ? startOfMonth(subMonths(minDate, 1)) : undefined;
-  const visibleEndMonth = maxDate ? startOfMonth(addMonths(maxDate, 1)) : undefined;
-  const selectedRange: DateRange | undefined =
-    startValue !== ALL_OPTION || endValue !== ALL_OPTION
-      ? {
-          from: parseDateValue(startValue),
-          to: endValue !== ALL_OPTION ? parseDateValue(endValue) : undefined,
-        }
-      : undefined;
+  const availableDates = useMemo(() => options.filter((option) => option !== ALL_OPTION), [options]);
+  const minDateValue = availableDates[0] ?? '';
+  const maxDateValue = availableDates.at(-1) ?? '';
+  const minDate = useMemo(() => (minDateValue ? parseISO(minDateValue) : undefined), [minDateValue]);
+  const maxDate = useMemo(() => (maxDateValue ? parseISO(maxDateValue) : undefined), [maxDateValue]);
+  const visibleStartMonth = useMemo(() => (minDate ? startOfMonth(subMonths(minDate, 1)) : undefined), [minDate]);
+  const visibleEndMonth = useMemo(() => (maxDate ? startOfMonth(addMonths(maxDate, 1)) : undefined), [maxDate]);
+  const selectedRange: DateRange | undefined = useMemo(
+    () =>
+      startValue !== ALL_OPTION || endValue !== ALL_OPTION
+        ? {
+            from: parseDateValue(startValue),
+            to: endValue !== ALL_OPTION ? parseDateValue(endValue) : undefined,
+          }
+        : undefined,
+    [endValue, startValue],
+  );
 
   useEffect(() => {
     setDraftRange(selectedRange);
@@ -5581,9 +5620,12 @@ function DateRangeFilter({
 
   useEffect(() => {
     if (!isOpen) {
-      setVisibleMonth(selectedRange?.from ?? minDate);
+      const nextVisibleMonth = parseDateValue(startValue) ?? minDate;
+      setVisibleMonth((current) =>
+        current?.getTime() === nextVisibleMonth?.getTime() ? current : nextVisibleMonth,
+      );
     }
-  }, [isOpen, minDate, selectedRange]);
+  }, [isOpen, minDateValue, startValue]);
 
   useEffect(() => {
     if (!isOpen) {
