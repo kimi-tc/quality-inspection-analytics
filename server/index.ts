@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Request, Response } from 'express';
 import compression from 'compression';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -172,7 +173,13 @@ type JsonFileCache<T> = {
   value: T;
 };
 
+type JsonResponseCache = {
+  etag: string;
+  body: string;
+};
+
 const jsonFileCache = new Map<string, JsonFileCache<unknown>>();
+const jsonResponseCache = new Map<string, JsonResponseCache>();
 
 const readCachedJsonFile = async <T,>(
   filePath: string,
@@ -207,6 +214,45 @@ const readCachedJsonFile = async <T,>(
 
 const invalidateJsonFileCache = (filePath: string) => {
   jsonFileCache.delete(filePath);
+  jsonResponseCache.delete(filePath);
+};
+
+const createJsonFileEtag = (stat: { size: number; mtimeMs: number }) =>
+  `W/"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+
+const sendCachedJsonFile = async <T,>(
+  req: Request,
+  res: Response,
+  filePath: string,
+  readValue: () => Promise<T>,
+) => {
+  let stat;
+  try {
+    stat = await fs.stat(filePath);
+  } catch {
+    await readValue();
+    stat = await fs.stat(filePath);
+  }
+  const etag = createJsonFileEtag(stat);
+
+  res.setHeader('Cache-Control', 'private, max-age=300, must-revalidate');
+  res.setHeader('ETag', etag);
+
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+
+  const cached = jsonResponseCache.get(filePath);
+  if (cached?.etag === etag) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.send(cached.body);
+  }
+
+  const value = await readValue();
+  const body = JSON.stringify(value);
+  jsonResponseCache.set(filePath, { etag, body });
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  return res.send(body);
 };
 
 const readSeedPropertyCategoryDictionary = async (): Promise<PropertyCategoryEntry[]> => {
@@ -515,10 +561,8 @@ const createImportRecord = (
   };
 };
 
-app.get('/api/dataset', async (_req, res) => {
-  const dataset = await readDataset();
-  res.setHeader('Cache-Control', 'private, max-age=30, must-revalidate');
-  res.json(dataset);
+app.get('/api/dataset', async (req, res) => {
+  await sendCachedJsonFile(req, res, dataFile, readDataset);
 });
 
 app.post('/api/dataset/merge', async (req, res) => {
@@ -549,10 +593,8 @@ app.delete('/api/dataset', async (_req, res) => {
   res.json(emptyDataset);
 });
 
-app.get('/api/efficiency-dataset', async (_req, res) => {
-  const dataset = await readEfficiencyDataset();
-  res.setHeader('Cache-Control', 'private, max-age=30, must-revalidate');
-  res.json(dataset);
+app.get('/api/efficiency-dataset', async (req, res) => {
+  await sendCachedJsonFile(req, res, efficiencyDataFile, readEfficiencyDataset);
 });
 
 app.post('/api/efficiency-dataset/merge', async (req, res) => {

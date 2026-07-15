@@ -2263,43 +2263,39 @@ function App() {
 
   useEffect(() => {
     const loadDataset = async () => {
-      try {
-        const dictionary = await fetchPropertyCategoryDictionary();
-        if (Array.isArray(dictionary.entries)) {
-          setPropertyCategoryDictionary(dictionary.entries);
-        }
-      } catch {
+      const [dictionaryResult, auditorDictionaryResult, sharedDatasetResult, efficiencyDatasetResult] =
+        await Promise.allSettled([
+          fetchPropertyCategoryDictionary(),
+          fetchAuditorTeamDictionary(),
+          fetchSharedDataset(),
+          fetchEfficiencyDataset(),
+        ]);
+
+      if (dictionaryResult.status === 'fulfilled' && Array.isArray(dictionaryResult.value.entries)) {
+        setPropertyCategoryDictionary(dictionaryResult.value.entries);
+      } else {
         setPropertyCategoryDictionary([]);
       }
 
-      try {
-        const auditorDictionary = await fetchAuditorTeamDictionary();
-        if (Array.isArray(auditorDictionary.entries)) {
-          setAuditorTeamDictionary(auditorDictionary.entries);
-        }
-      } catch {
+      if (auditorDictionaryResult.status === 'fulfilled' && Array.isArray(auditorDictionaryResult.value.entries)) {
+        setAuditorTeamDictionary(auditorDictionaryResult.value.entries);
+      } else {
         setAuditorTeamDictionary([]);
       }
 
-      try {
-        const sharedDataset = await fetchSharedDataset();
-        if (Array.isArray(sharedDataset.rows)) {
-          setDataset(sharedDataset);
-        }
-      } catch {
+      if (sharedDatasetResult.status === 'fulfilled' && Array.isArray(sharedDatasetResult.value.rows)) {
+        setDataset(sharedDatasetResult.value);
+      } else {
         setError('共享数据服务暂时不可用，请确认后端已启动。');
       }
 
-      try {
-        const sharedEfficiencyDataset = await fetchEfficiencyDataset();
-        if (Array.isArray(sharedEfficiencyDataset.rows)) {
-          setEfficiencyDataset(sharedEfficiencyDataset);
-        }
-      } catch {
+      if (efficiencyDatasetResult.status === 'fulfilled' && Array.isArray(efficiencyDatasetResult.value.rows)) {
+        setEfficiencyDataset(efficiencyDatasetResult.value);
+      } else {
         setEfficiencyDataset(emptyEfficiencyWorkbook);
-      } finally {
-        setIsLoading(false);
       }
+
+      setIsLoading(false);
     };
 
     void loadDataset();
