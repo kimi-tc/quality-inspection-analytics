@@ -2195,10 +2195,6 @@ function App() {
   const [activeView, setActiveView] = useState<ViewKey>('overview');
   const [overviewStartDateFilter, setOverviewStartDateFilter] = useState(ALL_OPTION);
   const [overviewEndDateFilter, setOverviewEndDateFilter] = useState(ALL_OPTION);
-  const [overviewTimeType, setOverviewTimeType] = useState<TimeReportType>('custom');
-  const [overviewYearValue, setOverviewYearValue] = useState('');
-  const [overviewMonthValue, setOverviewMonthValue] = useState('');
-  const [overviewDayValue, setOverviewDayValue] = useState('');
   const [overviewSessionFilter, setOverviewSessionFilter] = useState<string[]>([]);
   const [overviewBatchFilter, setOverviewBatchFilter] = useState<string[]>([]);
   const [attributeStartDateFilter, setAttributeStartDateFilter] = useState(ALL_OPTION);
@@ -2320,26 +2316,7 @@ function App() {
     }),
     [auditorTeamDictionary, dataset.rows],
   );
-  const weekOptions = useMemo(() => createWeekOptions(options.dates), [options.dates]);
-  const overviewYearOptions = useMemo(() => getYearOptionsFromDates(options.dates), [options.dates]);
-  const overviewMonthOptions = useMemo(
-    () => getMonthOptionsFromDates(options.dates, overviewYearValue || overviewYearOptions.at(-1) || ''),
-    [options.dates, overviewYearOptions, overviewYearValue],
-  );
-  const overviewDayOptions = useMemo(
-    () =>
-      getDayOptionsFromDates(
-        options.dates,
-        overviewYearValue || overviewYearOptions.at(-1) || '',
-        overviewMonthValue || overviewMonthOptions.at(-1) || '',
-      ),
-    [options.dates, overviewMonthOptions, overviewMonthValue, overviewYearOptions, overviewYearValue],
-  );
   const efficiencyDateOptions = useMemo(() => createDateOptions(efficiencyDataset.rows), [efficiencyDataset.rows]);
-  const efficiencyWeekOptions = useMemo(
-    () => createWeekOptions(efficiencyDateOptions),
-    [efficiencyDateOptions],
-  );
   const efficiencyTeamOptions = useMemo(
     () => createStringOptions<EfficiencyRow>(efficiencyDataset.rows, (row) => row.team),
     [efficiencyDataset.rows],
@@ -2354,15 +2331,6 @@ function App() {
     () => [qualityCoverage.end, efficiencyCoverage.end].filter(Boolean).sort((a, b) => b.localeCompare(a))[0] ?? '',
     [efficiencyCoverage.end, qualityCoverage.end],
   );
-  useEffect(() => {
-    const latestDate = options.dates.filter((date) => date !== ALL_OPTION).at(-1);
-    if (!latestDate || overviewYearValue) return;
-
-    const parts = getDateParts(latestDate);
-    setOverviewYearValue(parts.year);
-    setOverviewMonthValue(parts.month);
-    setOverviewDayValue(parts.day);
-  }, [options.dates, overviewYearValue]);
   const overallCoverage = useMemo(
     () => getDateCoverage([...dataset.rows, ...efficiencyDataset.rows]),
     [dataset.rows, efficiencyDataset.rows],
@@ -2371,7 +2339,6 @@ function App() {
     () => createDateOptions([...dataset.rows, ...efficiencyDataset.rows]),
     [dataset.rows, efficiencyDataset.rows],
   );
-  const aiWeekOptions = useMemo(() => createWeekOptions(aiDateOptions), [aiDateOptions]);
   const aiFilteredRows = useMemo(
     () => (activeView === 'ai' ? filterRowsByDateRange(dataset.rows, aiStartDateFilter, aiEndDateFilter) : []),
     [activeView, aiEndDateFilter, aiStartDateFilter, dataset.rows],
@@ -2721,87 +2688,6 @@ function App() {
       return [...current, metric];
     });
   };
-  const applyOverviewTimeRange = (type: TimeReportType, year: string, month: string, day: string) => {
-    const availableDateValues = options.dates.filter((date) => date !== ALL_OPTION);
-    const latestDateValue = availableDateValues.at(-1) || '';
-    const latestDate = latestDateValue ? parseISO(latestDateValue) : undefined;
-
-    if (latestDate && type === 'yesterday') {
-      const yesterday = format(addDays(latestDate, -1), 'yyyy-MM-dd');
-      setOverviewStartDateFilter(yesterday);
-      setOverviewEndDateFilter(yesterday);
-      return;
-    }
-
-    if (latestDate && (type === 'thisWeek' || type === 'lastWeek')) {
-      const weekStart = startOfWeek(latestDate, { weekStartsOn: 0 });
-      const targetStart = type === 'lastWeek' ? addDays(weekStart, -7) : weekStart;
-      const targetEnd = addDays(targetStart, 6);
-      setOverviewStartDateFilter(format(targetStart, 'yyyy-MM-dd'));
-      setOverviewEndDateFilter(format(targetEnd, 'yyyy-MM-dd'));
-      return;
-    }
-
-    if (!year || type === 'custom') return;
-
-    if (type === 'year') {
-      setOverviewStartDateFilter(`${year}-01-01`);
-      setOverviewEndDateFilter(`${year}-12-31`);
-      return;
-    }
-
-    if (!month) return;
-    if (type === 'month') {
-      const start = `${year}-${month}-01`;
-      setOverviewStartDateFilter(start);
-      setOverviewEndDateFilter(format(endOfMonth(parseISO(start)), 'yyyy-MM-dd'));
-      return;
-    }
-
-    if (!day) return;
-    const date = `${year}-${month}-${day}`;
-    setOverviewStartDateFilter(date);
-    setOverviewEndDateFilter(date);
-  };
-  const handleOverviewTimeTypeChange = (nextType: TimeReportType) => {
-    setOverviewTimeType(nextType);
-
-    if (nextType === 'custom') {
-      return;
-    }
-
-    const selectedDate = overviewStartDateFilter !== ALL_OPTION ? overviewStartDateFilter : '';
-    const latestDate = options.dates.filter((date) => date !== ALL_OPTION).at(-1);
-    const seedDate = selectedDate || latestDate || '';
-    const latestParts = seedDate ? getDateParts(seedDate) : { year: overviewYearValue, month: overviewMonthValue, day: overviewDayValue };
-    const nextYear = overviewYearValue || latestParts.year;
-    const nextMonth = overviewMonthValue || latestParts.month;
-    const nextDay = overviewDayValue || latestParts.day;
-
-    setOverviewYearValue(nextYear);
-    setOverviewMonthValue(nextMonth);
-    setOverviewDayValue(nextDay);
-    applyOverviewTimeRange(nextType, nextYear, nextMonth, nextDay);
-  };
-  const handleOverviewYearChange = (nextYear: string) => {
-    const nextMonth = getMonthOptionsFromDates(options.dates, nextYear).at(-1) || '';
-    const nextDay = getDayOptionsFromDates(options.dates, nextYear, nextMonth).at(-1) || '';
-    setOverviewYearValue(nextYear);
-    setOverviewMonthValue(nextMonth);
-    setOverviewDayValue(nextDay);
-    applyOverviewTimeRange(overviewTimeType, nextYear, nextMonth, nextDay);
-  };
-  const handleOverviewMonthChange = (nextMonth: string) => {
-    const nextDay = getDayOptionsFromDates(options.dates, overviewYearValue, nextMonth).at(-1) || '';
-    setOverviewMonthValue(nextMonth);
-    setOverviewDayValue(nextDay);
-    applyOverviewTimeRange(overviewTimeType, overviewYearValue, nextMonth, nextDay);
-  };
-  const handleOverviewDayChange = (nextDay: string) => {
-    setOverviewDayValue(nextDay);
-    applyOverviewTimeRange(overviewTimeType, overviewYearValue, overviewMonthValue, nextDay);
-  };
-
   const cards: MetricsCardData[] = [
     {
       title: '申报次数',
@@ -3226,7 +3112,7 @@ function App() {
           <motion.section
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
-            className="overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur"
+            className={activeView === 'compare' ? 'hidden' : 'overflow-visible rounded-[32px] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur'}
           >
           <div className={isOverviewView ? 'p-3 lg:p-4' : 'p-3 lg:p-4'}>
             {error ? (
@@ -3235,66 +3121,22 @@ function App() {
               </div>
             ) : null}
 
-            <div className={`${error ? (isOverviewView ? 'mt-3' : 'mt-3') : ''} ${isOverviewView ? 'rounded-[24px] p-3' : 'rounded-[22px] p-3'} bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] text-white`}>
+            <div className={`${error ? 'mt-3' : ''} ${activeView === 'compare' ? 'rounded-[22px] bg-transparent p-0 text-slate-900' : `${isOverviewView ? 'rounded-[24px] p-3' : 'rounded-[22px] p-3'} bg-[linear-gradient(135deg,_#12212d_0%,_#182b39_100%)] text-white`}`}>
               <div className="flex flex-col gap-3">
                 {activeView === 'compare' ? (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)] xl:items-end">
-                    <DateRangeFilter
-                      label="共同日期区间"
-                      startValue={compareStartDateFilter}
-                      endValue={compareEndDateFilter}
-                      options={options.dates}
-                      onStartChange={setCompareStartDateFilter}
-                      onEndChange={setCompareEndDateFilter}
-                      onClear={() => {
-                        setCompareStartDateFilter(ALL_OPTION);
-                        setCompareEndDateFilter(ALL_OPTION);
-                      }}
-                      compact
-                    />
-                    <WeekQuickSelect
-                      label="共同周区间"
-                      value={getWeekValue(compareStartDateFilter, compareEndDateFilter, weekOptions)}
-                      options={weekOptions}
-                      onChange={(week) => {
-                        setCompareStartDateFilter(week.start);
-                        setCompareEndDateFilter(week.end);
-                      }}
-                      onClear={() => {
-                        setCompareStartDateFilter(ALL_OPTION);
-                        setCompareEndDateFilter(ALL_OPTION);
-                      }}
-                      compact={!isOverviewView}
-                    />
-                  </div>
+                  null
                 ) : activeView === 'efficiency' ? (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.7fr)_minmax(180px,0.8fr)_minmax(170px,0.75fr)_minmax(170px,0.75fr)_minmax(160px,0.7fr)] xl:items-end">
-                    <DateRangeFilter
-                      label="人效日期区间"
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(520px,1.65fr)_minmax(170px,0.75fr)_minmax(170px,0.75fr)_minmax(160px,0.7fr)] xl:items-end">
+                    <TimeTypeFilter
                       startValue={efficiencyStartDateFilter}
                       endValue={efficiencyEndDateFilter}
-                      options={efficiencyDateOptions}
+                      dateOptions={efficiencyDateOptions}
                       onStartChange={setEfficiencyStartDateFilter}
                       onEndChange={setEfficiencyEndDateFilter}
                       onClear={() => {
                         setEfficiencyStartDateFilter(ALL_OPTION);
                         setEfficiencyEndDateFilter(ALL_OPTION);
                       }}
-                      compact
-                    />
-                    <WeekQuickSelect
-                      label="人效周区间"
-                      value={getWeekValue(efficiencyStartDateFilter, efficiencyEndDateFilter, efficiencyWeekOptions)}
-                      options={efficiencyWeekOptions}
-                      onChange={(week) => {
-                        setEfficiencyStartDateFilter(week.start);
-                        setEfficiencyEndDateFilter(week.end);
-                      }}
-                      onClear={() => {
-                        setEfficiencyStartDateFilter(ALL_OPTION);
-                        setEfficiencyEndDateFilter(ALL_OPTION);
-                      }}
-                      compact={!isOverviewView}
                     />
                     <FilterSelect
                       label="团队"
@@ -3347,33 +3189,17 @@ function App() {
                     </div>
                   </div>
                 ) : activeView === 'attribute' ? (
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)_repeat(3,minmax(150px,1fr))] xl:items-end">
-                    <DateRangeFilter
-                      label="日期区间"
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(520px,1.8fr)_repeat(3,minmax(150px,1fr))] xl:items-end">
+                    <TimeTypeFilter
                       startValue={attributeStartDateFilter}
                       endValue={attributeEndDateFilter}
-                      options={options.dates}
+                      dateOptions={options.dates}
                       onStartChange={setAttributeStartDateFilter}
                       onEndChange={setAttributeEndDateFilter}
                       onClear={() => {
                         setAttributeStartDateFilter(ALL_OPTION);
                         setAttributeEndDateFilter(ALL_OPTION);
                       }}
-                      compact
-                    />
-                    <WeekQuickSelect
-                      label="周区间"
-                      value={getWeekValue(attributeStartDateFilter, attributeEndDateFilter, weekOptions)}
-                      options={weekOptions}
-                      onChange={(week) => {
-                        setAttributeStartDateFilter(week.start);
-                        setAttributeEndDateFilter(week.end);
-                      }}
-                      onClear={() => {
-                        setAttributeStartDateFilter(ALL_OPTION);
-                        setAttributeEndDateFilter(ALL_OPTION);
-                      }}
-                      compact={!isOverviewView}
                     />
                     <MultiFilterSelect
                       label="场次"
@@ -3400,24 +3226,12 @@ function App() {
                 ) : (
                   <div className="grid gap-3 xl:grid-cols-[minmax(520px,1.45fr)_minmax(210px,0.65fr)_minmax(210px,0.65fr)] xl:items-end">
                     <TimeTypeFilter
-                      type={overviewTimeType}
-                      year={overviewYearValue}
-                      month={overviewMonthValue}
-                      day={overviewDayValue}
-                      yearOptions={overviewYearOptions}
-                      monthOptions={overviewMonthOptions}
-                      dayOptions={overviewDayOptions}
                       startValue={overviewStartDateFilter}
                       endValue={overviewEndDateFilter}
                       dateOptions={options.dates}
-                      onTypeChange={handleOverviewTimeTypeChange}
-                      onYearChange={handleOverviewYearChange}
-                      onMonthChange={handleOverviewMonthChange}
-                      onDayChange={handleOverviewDayChange}
                       onStartChange={setOverviewStartDateFilter}
                       onEndChange={setOverviewEndDateFilter}
                       onClear={() => {
-                        setOverviewTimeType('custom');
                         setOverviewStartDateFilter(ALL_OPTION);
                         setOverviewEndDateFilter(ALL_OPTION);
                       }}
@@ -3438,60 +3252,6 @@ function App() {
                     />
                   </div>
                 )}
-                {activeView === 'compare' ? (
-                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
-                    {compareDimension !== 'session' ? (
-                      <FilterSelect
-                        label="场次"
-                        icon={<Layers3 size={16} />}
-                        value={compareSessionFilter}
-                        options={options.sessions}
-                        onChange={setCompareSessionFilter}
-                        compact={!isOverviewView}
-                      />
-                    ) : null}
-                    {compareDimension !== 'batch' ? (
-                      <FilterSelect
-                        label="批次"
-                        icon={<Boxes size={16} />}
-                        value={compareBatchFilter}
-                        options={options.batches}
-                        onChange={setCompareBatchFilter}
-                        compact={!isOverviewView}
-                      />
-                    ) : null}
-                    {compareDimension !== 'attribute' ? (
-                      <FilterSelect
-                        label="属性项"
-                        icon={<Tags size={16} />}
-                        value={compareAttributeFilter}
-                        options={options.attributes}
-                        onChange={setCompareAttributeFilter}
-                        compact={!isOverviewView}
-                      />
-                    ) : null}
-                    {compareDimension !== 'auditor' ? (
-                      <FilterSelect
-                        label="审核人"
-                        icon={<Users size={16} />}
-                        value={compareAuditorFilter}
-                        options={options.auditors}
-                        onChange={setCompareAuditorFilter}
-                        compact={!isOverviewView}
-                      />
-                    ) : null}
-                    {compareDimension !== 'auditorTeam' ? (
-                      <FilterSelect
-                        label="审核团队"
-                        icon={<Users size={16} />}
-                        value={compareAuditorTeamFilter}
-                        options={options.auditorTeams}
-                        onChange={setCompareAuditorTeamFilter}
-                        compact={!isOverviewView}
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
                 <details className={`${isOverviewView ? 'rounded-xl px-3 py-2' : 'rounded-xl px-3 py-2'} border border-white/10 bg-white/5 text-sm text-slate-200`}>
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium marker:content-none">
                     当前口径
@@ -3573,6 +3333,166 @@ function App() {
             </>
           ) : activeView === 'compare' ? (
             <>
+              <section className="mt-5 rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_36px_rgba(15,23,42,0.045)]">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.22em] text-cyan-500">Compare Setup</p>
+                    <h2 className="mt-1 font-display text-xl text-slate-900">选择本次要对比的对象</h2>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      先选对比类型，再在右侧配置时间、A / B 对象和可选限定条件。
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
+                    {formatDateDisplay(compareStartDateFilter) || '全部日期'} ~ {formatDateDisplay(compareEndDateFilter) || '全部日期'}
+                  </span>
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.55fr)_minmax(0,1.45fr)]">
+                  <div className="rounded-2xl bg-slate-50/90 p-3">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">对比类型</p>
+                    <div className="grid gap-2">
+                      {COMPARE_DIMENSIONS.map((dimension) => {
+                        const selected = compareDimension === dimension.key;
+                        return (
+                          <button
+                            key={dimension.key}
+                            type="button"
+                            onClick={() => setCompareDimension(dimension.key)}
+                            aria-pressed={selected}
+                            className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-sm font-medium transition ${
+                              selected
+                                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                            }`}
+                          >
+                            <span>{dimension.label}对比</span>
+                            {selected ? <Check size={15} /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+                      <div className="mb-2">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">时间范围</p>
+                        <p className="mt-1 text-xs text-slate-400">时间会同时作用于 A / B 两个对象，保证同周期对比。</p>
+                      </div>
+                      <TimeTypeFilter
+                        startValue={compareStartDateFilter}
+                        endValue={compareEndDateFilter}
+                        dateOptions={options.dates}
+                        onStartChange={setCompareStartDateFilter}
+                        onEndChange={setCompareEndDateFilter}
+                        onClear={() => {
+                          setCompareStartDateFilter(ALL_OPTION);
+                          setCompareEndDateFilter(ALL_OPTION);
+                        }}
+                        tone="light"
+                        compact
+                      />
+                    </div>
+
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/50 p-3">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">当前对比对象</p>
+                          <p className="mt-1 text-xs text-slate-500">已选择：{compareDimensionConfig.label}对比</p>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <FilterSelect
+                          label={`${compareDimensionConfig.label} A`}
+                          icon={<span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />}
+                          value={compareA}
+                          options={compareDimensionOptions}
+                          onChange={setCompareAFilter}
+                          tone="light"
+                          compact
+                        />
+                        <FilterSelect
+                          label={`${compareDimensionConfig.label} B`}
+                          icon={<span className="h-2.5 w-2.5 rounded-full bg-orange-500" />}
+                          value={compareB}
+                          options={compareDimensionOptions}
+                          onChange={setCompareBFilter}
+                          tone="light"
+                          compact
+                        />
+                      </div>
+                    </div>
+
+                    <details className="rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+                      <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">限定条件</p>
+                          <p className="mt-1 text-xs text-slate-400">可选，用于保证 A / B 在同一辅助口径下比较。</p>
+                        </div>
+                        <ChevronDown size={18} className="text-slate-400" />
+                      </summary>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {compareDimension !== 'session' ? (
+                          <FilterSelect
+                            label="场次"
+                            icon={<Layers3 size={16} />}
+                            value={compareSessionFilter}
+                            options={options.sessions}
+                            onChange={setCompareSessionFilter}
+                            tone="light"
+                            compact
+                          />
+                        ) : null}
+                        {compareDimension !== 'batch' ? (
+                          <FilterSelect
+                            label="批次"
+                            icon={<Boxes size={16} />}
+                            value={compareBatchFilter}
+                            options={options.batches}
+                            onChange={setCompareBatchFilter}
+                            tone="light"
+                            compact
+                          />
+                        ) : null}
+                        {compareDimension !== 'attribute' ? (
+                          <FilterSelect
+                            label="属性项"
+                            icon={<Tags size={16} />}
+                            value={compareAttributeFilter}
+                            options={options.attributes}
+                            onChange={setCompareAttributeFilter}
+                            tone="light"
+                            compact
+                          />
+                        ) : null}
+                        {compareDimension !== 'auditor' ? (
+                          <FilterSelect
+                            label="审核人"
+                            icon={<Users size={16} />}
+                            value={compareAuditorFilter}
+                            options={options.auditors}
+                            onChange={setCompareAuditorFilter}
+                            tone="light"
+                            compact
+                          />
+                        ) : null}
+                        {compareDimension !== 'auditorTeam' ? (
+                          <FilterSelect
+                            label="审核团队"
+                            icon={<Users size={16} />}
+                            value={compareAuditorTeamFilter}
+                            options={options.auditorTeams}
+                            onChange={setCompareAuditorTeamFilter}
+                            tone="light"
+                            compact
+                          />
+                        ) : null}
+                      </div>
+                    </details>
+                  </div>
+                </div>
+              </section>
+
               <section className="mt-8 grid gap-6 xl:grid-cols-2">
                 <SessionCompareSummaryCard label={`${compareDimensionConfig.label} A`} session={compareA} metrics={compareAMetrics} tone="cyan" />
                 <SessionCompareSummaryCard label={`${compareDimensionConfig.label} B`} session={compareB} metrics={compareBMetrics} tone="orange" />
@@ -3588,54 +3508,6 @@ function App() {
                   <span className="rounded-full bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
                     {formatDateDisplay(compareStartDateFilter) || '全部日期'} ~ {formatDateDisplay(compareEndDateFilter) || '全部日期'}
                   </span>
-                </div>
-                <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">对比对象</p>
-                      <p className="mt-1 text-xs text-slate-400">选择本次要对比的维度，再选择 A / B 两个对象。</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {COMPARE_DIMENSIONS.map((dimension) => {
-                        const selected = compareDimension === dimension.key;
-                        return (
-                          <button
-                            key={dimension.key}
-                            type="button"
-                            onClick={() => setCompareDimension(dimension.key)}
-                            aria-pressed={selected}
-                            className={`rounded-full border px-3 py-2 text-xs font-medium transition ${
-                              selected
-                                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
-                                : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-800'
-                            }`}
-                          >
-                            {dimension.label}对比
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <FilterSelect
-                      label={`${compareDimensionConfig.label} A`}
-                      icon={<span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />}
-                      value={compareA}
-                      options={compareDimensionOptions}
-                      onChange={setCompareAFilter}
-                      tone="light"
-                      compact
-                    />
-                    <FilterSelect
-                      label={`${compareDimensionConfig.label} B`}
-                      icon={<span className="h-2.5 w-2.5 rounded-full bg-orange-500" />}
-                      value={compareB}
-                      options={compareDimensionOptions}
-                      onChange={setCompareBFilter}
-                      tone="light"
-                      compact
-                    />
-                  </div>
                 </div>
                 <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4469,12 +4341,11 @@ function App() {
                     当前范围：{aiContext.dateRange}
                   </span>
                 </div>
-                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(340px,1.8fr)_minmax(180px,0.9fr)] xl:items-end">
-                  <DateRangeFilter
-                    label="AI 日期区间"
+                <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(520px,1fr)] xl:items-end">
+                  <TimeTypeFilter
                     startValue={aiStartDateFilter}
                     endValue={aiEndDateFilter}
-                    options={aiDateOptions}
+                    dateOptions={aiDateOptions}
                     onStartChange={(value) => {
                       setAiStartDateFilter(value);
                       setModelAnalysis(null);
@@ -4488,24 +4359,6 @@ function App() {
                       setAiEndDateFilter(ALL_OPTION);
                       setModelAnalysis(null);
                     }}
-                    compact
-                    tone="light"
-                  />
-                  <WeekQuickSelect
-                    label="AI 周区间"
-                    value={getWeekValue(aiStartDateFilter, aiEndDateFilter, aiWeekOptions)}
-                    options={aiWeekOptions}
-                    onChange={(week) => {
-                      setAiStartDateFilter(week.start);
-                      setAiEndDateFilter(week.end);
-                      setModelAnalysis(null);
-                    }}
-                    onClear={() => {
-                      setAiStartDateFilter(ALL_OPTION);
-                      setAiEndDateFilter(ALL_OPTION);
-                      setModelAnalysis(null);
-                    }}
-                    compact
                     tone="light"
                   />
                 </div>
@@ -5382,57 +5235,149 @@ function WeekQuickSelect({
 }
 
 function TimeTypeFilter({
-  type,
-  year,
-  month,
-  day,
-  yearOptions,
-  monthOptions,
-  dayOptions,
   startValue,
   endValue,
   dateOptions,
-  onTypeChange,
-  onYearChange,
-  onMonthChange,
-  onDayChange,
   onStartChange,
   onEndChange,
   onClear,
+  tone = 'dark',
+  compact = false,
 }: {
-  type: TimeReportType;
-  year: string;
-  month: string;
-  day: string;
-  yearOptions: string[];
-  monthOptions: string[];
-  dayOptions: string[];
   startValue: string;
   endValue: string;
   dateOptions: string[];
-  onTypeChange: (value: TimeReportType) => void;
-  onYearChange: (value: string) => void;
-  onMonthChange: (value: string) => void;
-  onDayChange: (value: string) => void;
   onStartChange: (value: string) => void;
   onEndChange: (value: string) => void;
   onClear: () => void;
+  tone?: 'dark' | 'light';
+  compact?: boolean;
 }) {
-  const controlClass = 'dashboard-select h-10 rounded-xl border border-white/10 bg-white/[0.08] px-3 text-sm font-medium text-white outline-none transition focus:border-cyan-300/60';
+  const isLight = tone === 'light';
+  const controlClass = `dashboard-select ${compact ? 'h-9' : 'h-10'} rounded-xl px-3 text-sm font-medium outline-none transition ${
+    isLight
+      ? 'border border-slate-200 bg-white text-slate-900 focus:border-sky-300'
+      : 'border border-white/10 bg-white/[0.08] text-white focus:border-cyan-300/60'
+  }`;
   const selectWrapClass = 'flex items-center gap-2';
+  const [type, setType] = useState<TimeReportType>('custom');
+  const availableDateValues = useMemo(() => dateOptions.filter((date) => date !== ALL_OPTION), [dateOptions]);
+  const latestDateValue = availableDateValues.at(-1) || '';
+  const seedDateValue = startValue !== ALL_OPTION ? startValue : latestDateValue;
+  const seedParts = getDateParts(seedDateValue);
+  const [year, setYear] = useState(seedParts.year);
+  const [month, setMonth] = useState(seedParts.month);
+  const [day, setDay] = useState(seedParts.day);
+  const yearOptions = useMemo(() => getYearOptionsFromDates(dateOptions), [dateOptions]);
+  const monthOptions = useMemo(
+    () => getMonthOptionsFromDates(dateOptions, year || yearOptions.at(-1) || ''),
+    [dateOptions, year, yearOptions],
+  );
+  const dayOptions = useMemo(
+    () => getDayOptionsFromDates(dateOptions, year || yearOptions.at(-1) || '', month || monthOptions.at(-1) || ''),
+    [dateOptions, month, monthOptions, year, yearOptions],
+  );
+
+  useEffect(() => {
+    if (year || !latestDateValue) return;
+    const parts = getDateParts(latestDateValue);
+    setYear(parts.year);
+    setMonth(parts.month);
+    setDay(parts.day);
+  }, [latestDateValue, year]);
+
+  const applyRange = (nextType: TimeReportType, nextYear: string, nextMonth: string, nextDay: string) => {
+    const latestDate = latestDateValue ? parseISO(latestDateValue) : undefined;
+
+    if (latestDate && nextType === 'yesterday') {
+      const yesterday = format(addDays(latestDate, -1), 'yyyy-MM-dd');
+      onStartChange(yesterday);
+      onEndChange(yesterday);
+      return;
+    }
+
+    if (latestDate && (nextType === 'thisWeek' || nextType === 'lastWeek')) {
+      const weekStart = startOfWeek(latestDate, { weekStartsOn: 0 });
+      const targetStart = nextType === 'lastWeek' ? addDays(weekStart, -7) : weekStart;
+      const targetEnd = addDays(targetStart, 6);
+      onStartChange(format(targetStart, 'yyyy-MM-dd'));
+      onEndChange(format(targetEnd, 'yyyy-MM-dd'));
+      return;
+    }
+
+    if (!nextYear || nextType === 'custom') return;
+
+    if (nextType === 'year') {
+      onStartChange(`${nextYear}-01-01`);
+      onEndChange(`${nextYear}-12-31`);
+      return;
+    }
+
+    if (!nextMonth) return;
+    if (nextType === 'month') {
+      const start = `${nextYear}-${nextMonth}-01`;
+      onStartChange(start);
+      onEndChange(format(endOfMonth(parseISO(start)), 'yyyy-MM-dd'));
+      return;
+    }
+
+    if (!nextDay) return;
+    const date = `${nextYear}-${nextMonth}-${nextDay}`;
+    onStartChange(date);
+    onEndChange(date);
+  };
+
+  const handleTypeChange = (nextType: TimeReportType) => {
+    setType(nextType);
+
+    if (nextType === 'custom') {
+      return;
+    }
+
+    const fallbackParts = getDateParts(seedDateValue || latestDateValue);
+    const nextYear = year || fallbackParts.year;
+    const nextMonth = month || fallbackParts.month;
+    const nextDay = day || fallbackParts.day;
+
+    setYear(nextYear);
+    setMonth(nextMonth);
+    setDay(nextDay);
+    applyRange(nextType, nextYear, nextMonth, nextDay);
+  };
+
+  const handleYearChange = (nextYear: string) => {
+    const nextMonth = getMonthOptionsFromDates(dateOptions, nextYear).at(-1) || '';
+    const nextDay = getDayOptionsFromDates(dateOptions, nextYear, nextMonth).at(-1) || '';
+    setYear(nextYear);
+    setMonth(nextMonth);
+    setDay(nextDay);
+    applyRange(type, nextYear, nextMonth, nextDay);
+  };
+
+  const handleMonthChange = (nextMonth: string) => {
+    const nextDay = getDayOptionsFromDates(dateOptions, year, nextMonth).at(-1) || '';
+    setMonth(nextMonth);
+    setDay(nextDay);
+    applyRange(type, year, nextMonth, nextDay);
+  };
+
+  const handleDayChange = (nextDay: string) => {
+    setDay(nextDay);
+    applyRange(type, year, month, nextDay);
+  };
 
   return (
     <div className="min-w-0">
-      <span className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+      <span className={`${compact ? 'mb-1.5' : 'mb-2'} flex items-center gap-2 text-xs uppercase tracking-[0.2em] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
         <CalendarDays size={16} />
         时间类型
       </span>
       <div className="flex flex-wrap items-center gap-2">
-        <label className="w-[150px]">
+        <label className={compact ? 'w-[132px]' : 'w-[150px]'}>
           <span className="sr-only">时间类型</span>
           <select
             value={type}
-            onChange={(event) => onTypeChange(event.target.value as TimeReportType)}
+            onChange={(event) => handleTypeChange(event.target.value as TimeReportType)}
             className={`${controlClass} w-full`}
           >
             <option value="yesterday">昨天</option>
@@ -5446,7 +5391,7 @@ function TimeTypeFilter({
         </label>
 
         {type === 'custom' || type === 'yesterday' || type === 'lastWeek' || type === 'thisWeek' ? (
-        <div className="min-w-[300px] flex-1">
+        <div className={`${compact ? 'min-w-[260px]' : 'min-w-[300px]'} flex-1`}>
           <DateRangeFilter
             label="日期区间"
             startValue={startValue}
@@ -5457,39 +5402,40 @@ function TimeTypeFilter({
             onClear={onClear}
             compact
             hideLabel
+            tone={tone}
           />
         </div>
       ) : (
         <>
           <label className={selectWrapClass}>
             <span className="sr-only">年</span>
-            <select value={year} onChange={(event) => onYearChange(event.target.value)} className={`${controlClass} w-[112px]`}>
+            <select value={year} onChange={(event) => handleYearChange(event.target.value)} className={`${controlClass} ${compact ? 'w-[96px]' : 'w-[112px]'}`}>
               {yearOptions.map((item) => (
                 <option key={item} value={item}>{item}</option>
               ))}
             </select>
-            <span className="text-sm font-semibold text-slate-200">年</span>
+            <span className={`text-sm font-semibold ${isLight ? 'text-slate-600' : 'text-slate-200'}`}>年</span>
           </label>
           {type === 'month' || type === 'day' ? (
             <label className={selectWrapClass}>
               <span className="sr-only">月</span>
-              <select value={month} onChange={(event) => onMonthChange(event.target.value)} className={`${controlClass} w-[84px]`}>
+              <select value={month} onChange={(event) => handleMonthChange(event.target.value)} className={`${controlClass} ${compact ? 'w-[72px]' : 'w-[84px]'}`}>
                 {monthOptions.map((item) => (
                   <option key={item} value={item}>{Number(item)}</option>
                 ))}
               </select>
-              <span className="text-sm font-semibold text-slate-200">月</span>
+              <span className={`text-sm font-semibold ${isLight ? 'text-slate-600' : 'text-slate-200'}`}>月</span>
             </label>
           ) : null}
           {type === 'day' ? (
             <label className={selectWrapClass}>
               <span className="sr-only">日</span>
-              <select value={day} onChange={(event) => onDayChange(event.target.value)} className={`${controlClass} w-[84px]`}>
+              <select value={day} onChange={(event) => handleDayChange(event.target.value)} className={`${controlClass} ${compact ? 'w-[72px]' : 'w-[84px]'}`}>
                 {dayOptions.map((item) => (
                   <option key={item} value={item}>{Number(item)}</option>
                 ))}
               </select>
-              <span className="text-sm font-semibold text-slate-200">日</span>
+              <span className={`text-sm font-semibold ${isLight ? 'text-slate-600' : 'text-slate-200'}`}>日</span>
             </label>
           ) : null}
         </>
