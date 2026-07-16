@@ -3060,8 +3060,8 @@ function App() {
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#f6efe4_0%,_#f3f8f6_40%,_#eef2ff_100%)] text-slate-900">
       <div className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 lg:px-8">
         <header className="sticky top-3 z-50 mb-5 rounded-[24px] border border-white/70 bg-white/88 px-4 py-3 shadow-[0_14px_42px_rgba(15,23,42,0.08)] backdrop-blur">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-[280px] flex-1 flex-wrap items-center gap-3">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white">
                   <Layers3 size={18} />
@@ -3078,14 +3078,14 @@ function App() {
                   </p>
                 </div>
               </div>
-              <div className="hidden items-center gap-2 lg:flex">
+              <div className="hidden min-w-0 flex-wrap items-center gap-2 lg:flex">
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-3 py-2">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">最新数据</p>
                   <p className="mt-0.5 font-display text-sm font-semibold text-slate-950">{latestDataDate || '暂无数据'}</p>
                 </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-2">
+                <div className="max-w-[300px] rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-2">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">可查询区间</p>
-                  <p className="mt-0.5 text-sm font-semibold text-slate-800">
+                  <p className="mt-0.5 truncate text-sm font-semibold text-slate-800">
                     {overallCoverage.start && overallCoverage.end
                       ? `${overallCoverage.start} ~ ${overallCoverage.end}`
                       : '暂无可查询数据'}
@@ -3093,7 +3093,7 @@ function App() {
                 </div>
               </div>
             </div>
-            <nav className="flex min-w-0 gap-2 overflow-x-auto pb-1 xl:justify-end xl:pb-0">
+            <nav className="flex min-w-0 flex-wrap items-center justify-start gap-2 lg:justify-end">
               {navItems.map((item) => (
                 <TopNavItem
                   key={item.key}
@@ -4650,7 +4650,7 @@ function TopNavItem({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition ${
+      className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-semibold transition ${
         active
           ? 'border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.18)]'
           : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900'
